@@ -298,5 +298,5 @@ module_init(g5kbd_init);
 module_exit(g5kbd_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("pablorg");
+MODULE_AUTHOR("PabloJustDevelops");
 MODULE_DESCRIPTION("Gigabyte G5 (Clevo-ODM) keyboard backlight driver");

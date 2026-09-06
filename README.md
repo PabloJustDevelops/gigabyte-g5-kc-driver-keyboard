@@ -57,13 +57,14 @@ g5kbd-gui
 ```
 
 A dark control panel with a live keyboard preview that glows in the current
-colour, colour presets + RGB sliders + hex entry, brightness/power, and the
-breathe/cycle effects with speed. Built with **Tauri v2** (Rust core + web
-frontend); every change goes through the `g5kbd` CLI, so the GUI never touches
-the hardware itself and needs no privileges — the udev rule grants the LED
-node to the `wheel` group. The kernel node being present also means
-KDE/GNOME keyboard-brightness controls and tools like `brightnessctl` work
-for the brightness part.
+colour, colour presets + a native picker + RGB sliders + hex entry,
+brightness/power, saved colour profiles, and the breathe/cycle effects with
+speed. Built with **Tauri v2** (Rust core) and a **React + TypeScript +
+Tailwind + shadcn/ui** frontend; every change goes through the `g5kbd` CLI,
+so the GUI never touches the hardware itself and needs no privileges — the
+udev rule grants the LED node to the `wheel` group. The kernel node being
+present also means KDE/GNOME keyboard-brightness controls and tools like
+`brightnessctl` work for the brightness part.
 
 To hack on the UI alone (no driver needed): `cd gui && npm run dev` and open
 http://localhost:5173 — the panel falls back to an in-memory mock when it

@@ -14,10 +14,10 @@
       {
         "label": "main",
         "title": "g5kbd — keyboard backlight",
-        "width": 540,
-        "height": 900,
-        "minWidth": 440,
-        "minHeight": 640,
+        "width": 1120,
+        "height": 680,
+        "minWidth": 800,
+        "minHeight": 540,
         "resizable": true,
         "center": true,
         "theme": "Dark"

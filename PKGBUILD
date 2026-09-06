@@ -1,4 +1,4 @@
-# Maintainer: pablorg <pablorg@localhost>
+# Maintainer: PabloJustDevelops
 # Build with:  makepkg -si   (inside this repo)
 pkgname=g5kbd
 pkgver=0.3.0
@@ -18,10 +18,33 @@ source=("src/g5kbd.py"
         "kernel/Makefile"
         "kernel/99-g5kbd.rules"
         "gui/package.json"
-        "gui/vite.config.js"
+        "gui/package-lock.json"
+        "gui/vite.config.ts"
+        "gui/tsconfig.json"
         "gui/index.html"
-        "gui/src/main.js"
         "gui/src/styles.css"
+        "gui/src/main.tsx"
+        "gui/src/App.tsx"
+        "gui/src/components/BrightnessPanel.tsx"
+        "gui/src/components/ColorPanel.tsx"
+        "gui/src/components/EffectsPanel.tsx"
+        "gui/src/components/KeyboardPreview.tsx"
+        "gui/src/components/Section.tsx"
+        "gui/src/components/Sidebar.tsx"
+        "gui/src/components/TopChips.tsx"
+        "gui/src/components/ui/button.tsx"
+        "gui/src/components/ui/slider.tsx"
+        "gui/src/components/ui/switch.tsx"
+        "gui/src/hooks/useBacklight.ts"
+        "gui/src/views/HomeView.tsx"
+        "gui/src/views/LightingView.tsx"
+        "gui/src/views/PerformanceView.tsx"
+        "gui/src/views/ProfilesView.tsx"
+        "gui/src/lib/api.ts"
+        "gui/src/lib/cn.ts"
+        "gui/src/lib/color.ts"
+        "gui/src/lib/keyboard.ts"
+        "gui/src/lib/types.ts"
         "gui/src-tauri/Cargo.toml"
         "gui/src-tauri/Cargo.lock"
         "gui/src-tauri/build.rs"
@@ -33,12 +56,14 @@ source=("src/g5kbd.py"
         "gui/src-tauri/src/main.rs"
         "gui/src-tauri/src/lib.rs"
         "README.md"
-        "docs/WINDOWS-RESEARCH.md")
-sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
+        "docs/WINDOWS-RESEARCH.md")sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
             'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
             'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
             'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
-            'SKIP' 'SKIP')
+            'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
+            'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
+            'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
+            'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
 
 build() {
   # --- kernel module against the running kernel's headers ---
@@ -78,6 +103,6 @@ package() {
   chmod 2775 "$pkgdir/var/lib/g5kbd"
   # --- docs ---
   install -Dm644 "$srcdir/README.md" "$pkgdir/usr/share/doc/g5kbd/README.md"
-  install -Dm644 "$srcdir/WINDOWS-RESEARCH.md" \
+  install -Dm644 "$srcdir/docs/WINDOWS-RESEARCH.md" \
     "$pkgdir/usr/share/doc/g5kbd/WINDOWS-RESEARCH.md"
 }

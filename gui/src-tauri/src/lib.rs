@@ -19,15 +19,13 @@ use serde::Serialize;
 const G5KBD: &str = "g5kbd";
 
 fn default_state_file() -> PathBuf {
-    PathBuf::from(std::env::var_os("G5KBD_STATE").unwrap_or_else(
-        || "/var/lib/g5kbd/state.json".into(),
-    ))
+    PathBuf::from(
+        std::env::var_os("G5KBD_STATE").unwrap_or_else(|| "/var/lib/g5kbd/state.json".into()),
+    )
 }
 
 fn default_pid_file() -> PathBuf {
-    PathBuf::from(std::env::var_os("G5KBD_PID").unwrap_or_else(
-        || "/run/g5kbd-effect.pid".into(),
-    ))
+    PathBuf::from(std::env::var_os("G5KBD_PID").unwrap_or_else(|| "/run/g5kbd-effect.pid".into()))
 }
 
 /// Per-user pid file under $XDG_RUNTIME_DIR so a non-root GUI can register
@@ -56,7 +54,12 @@ fn run_cli(args: &[&str]) -> Result<String, String> {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {
         let err = String::from_utf8_lossy(&out.stderr);
-        let tail = err.trim().lines().last().unwrap_or("unknown error").to_string();
+        let tail = err
+            .trim()
+            .lines()
+            .last()
+            .unwrap_or("unknown error")
+            .to_string();
         Err(format!("g5kbd {}: {tail}", args.join(" ")))
     }
 }
@@ -201,6 +204,28 @@ async fn effect_start(mode: String, speed: u8) -> Result<String, String> {
     .await
 }
 
+/// Tab-separated profile list from the CLI: name \t RRGGBB \t brightness \t on|off
+#[tauri::command]
+async fn profiles_list() -> Result<Vec<String>, String> {
+    let out = run_cli_async(vec!["profile".into(), "list".into()]).await?;
+    Ok(out.lines().map(str::to_string).collect())
+}
+
+#[tauri::command]
+async fn profile_save(name: String) -> Result<String, String> {
+    run_cli_async(vec!["profile".into(), "save".into(), name]).await
+}
+
+#[tauri::command]
+async fn profile_apply(name: String) -> Result<String, String> {
+    run_cli_async(vec!["profile".into(), "apply".into(), name]).await
+}
+
+#[tauri::command]
+async fn profile_delete(name: String) -> Result<String, String> {
+    run_cli_async(vec!["profile".into(), "delete".into(), name]).await
+}
+
 #[tauri::command]
 async fn effect_stop() -> Result<String, String> {
     run_cli_async(vec!["effect".into(), "stop".into()]).await
@@ -220,6 +245,10 @@ pub fn run() {
             set_power,
             effect_start,
             effect_stop,
+            profiles_list,
+            profile_save,
+            profile_apply,
+            profile_delete,
         ])
         .run(tauri::generate_context!())
         .expect("error while running g5kbd-gui");

@@ -343,6 +343,92 @@ def save_state(st: dict) -> None:
 
 
 # --------------------------------------------------------------------------
+# Profiles (named colour/brightness presets, stored next to the state)
+# --------------------------------------------------------------------------
+PROFILES_PATH = os.environ.get("G5KBD_PROFILES",
+                               os.path.join(os.path.dirname(STATE_PATH),
+                                            "profiles.json"))
+
+
+def load_profiles() -> dict:
+    try:
+        with open(PROFILES_PATH) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_profiles(profiles: dict) -> None:
+    os.makedirs(os.path.dirname(PROFILES_PATH), exist_ok=True)
+    tmp = PROFILES_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(profiles, f, indent=2, sort_keys=True)
+        f.write("\n")
+    os.replace(tmp, PROFILES_PATH)
+
+
+def _valid_name(name: str) -> str:
+    name = name.strip()
+    if not name or len(name) > 24:
+        raise ValueError("profile name must be 1..24 characters")
+    if not all(c.isalnum() or c in " _-.Ññ" for c in name):
+        raise ValueError("profile name may only contain letters, digits, space, _ - .")
+    return name
+
+
+def cmd_profile(args) -> int:
+    profiles = load_profiles()
+    action, name = args.profile_action, args.name
+
+    if action == "list":
+        for n in sorted(profiles):
+            p = profiles[n]
+            rgb = tuple(p.get("rgb", DEFAULT_RGB))
+            col = "%02x%02x%02x" % rgb
+            print("%s\t%s\t%s\t%s" % (
+                n, col, int(p.get("brightness", DEFAULT_BRIGHTNESS)),
+                "on" if p.get("enabled", True) else "off"))
+        return 0
+
+    if action == "save":
+        name = _valid_name(name or "")
+        st = load_state() or default_state()
+        profiles[name] = {
+            "enabled": bool(st.get("enabled", True)),
+            "rgb": list(st["rgb"]),
+            "brightness": int(st["brightness"]),
+        }
+        save_profiles(profiles)
+        print("profile saved: %s" % name)
+        return 0
+
+    if action == "apply":
+        name = _valid_name(name or "")
+        if name not in profiles:
+            raise ValueError("profile not found: %s" % name)
+        st = profiles[name]
+        st.setdefault("enabled", True)
+        st.setdefault("rgb", list(DEFAULT_RGB))
+        st.setdefault("brightness", DEFAULT_BRIGHTNESS)
+        apply_state(open_backend(), st)
+        save_state(st)
+        print("applied profile %s: %s" % (name, describe(st)))
+        return 0
+
+    if action == "delete":
+        name = _valid_name(name or "")
+        if name not in profiles:
+            raise ValueError("profile not found: %s" % name)
+        del profiles[name]
+        save_profiles(profiles)
+        print("profile deleted: %s" % name)
+        return 0
+
+    raise ValueError("unknown profile action %r" % action)
+
+
+# --------------------------------------------------------------------------
 # Apply
 # --------------------------------------------------------------------------
 def apply_state(b, st: dict) -> None:
@@ -665,6 +751,11 @@ def main(argv) -> int:
                    help="apply the default even if nothing is saved")
     p.set_defaults(func=cmd_restore)
 
+    p = sub.add_parser("profile", help="named colour/brightness presets")
+    p.add_argument("profile_action", choices=["save", "list", "apply", "delete"])
+    p.add_argument("name", nargs="?", help="profile name (save/apply/delete)")
+    p.set_defaults(func=cmd_profile)
+
     sub.add_parser("state", help="show the saved state").set_defaults(func=cmd_state)
     sub.add_parser("probe", help="cycle red/green/blue/white as a self-test") \
         .set_defaults(func=cmd_probe)
@@ -684,9 +775,12 @@ def main(argv) -> int:
         parser.print_help()
         return 1
 
-    # ``state`` only reads a file — no root needed. Everything else talks to
-    # the hardware, so auto-elevate unless we are root / dry-running / opted out.
-    needs_root = args.cmd != "state"
+    # ``state`` and ``profile list`` only read files — no root needed.
+    # Everything else talks to the hardware, so auto-elevate unless we are
+    # root / dry-running / opted out.
+    needs_root = (args.cmd != "state"
+                  and not (args.cmd == "profile"
+                           and getattr(args, "profile_action", None) == "list"))
     if (needs_root and os.geteuid() != 0
             and not os.environ.get("G5KBD_FAKE")
             and not os.environ.get("G5KBD_NO_SUDO")):

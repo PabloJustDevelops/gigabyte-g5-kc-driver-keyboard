@@ -8,6 +8,12 @@ edition = "2021"
 name = "g5kbd_gui_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# Used by `tauri build` so the release binary embeds the frontend instead
+# of trying to reach the dev server. Plain `cargo build` omits it and
+# produces a dev-URL binary ("Could not connect to localhost").
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
