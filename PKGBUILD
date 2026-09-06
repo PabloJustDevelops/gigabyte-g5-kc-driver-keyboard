@@ -24,6 +24,7 @@ source=("src/g5kbd.py"
         "gui/index.html"
         "gui/src/styles.css"
         "gui/src/main.tsx"
+        "gui/src/vite-env.d.ts"
         "gui/src/App.tsx"
         "gui/src/components/BrightnessPanel.tsx"
         "gui/src/components/ColorPanel.tsx"
@@ -63,7 +64,8 @@ source=("src/g5kbd.py"
             'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
             'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
             'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
-            'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+            'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
+            'SKIP')
 
 build() {
   # --- kernel module against the running kernel's headers ---
