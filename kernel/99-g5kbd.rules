@@ -1,0 +1,7 @@
+# g5kbd: let the desktop user drive the keyboard backlight without root.
+#
+# Note: sysfs (kernfs) silently ignores chgrp/chown, so a group-based grant
+# (e.g. chgrp wheel) never works — chmod is the only lever. Scope the write
+# to exactly the two colour/brightness attributes of the rgb:kbd LED.
+SUBSYSTEM=="leds", KERNEL=="rgb:kbd", ACTION=="add", \
+  RUN+="/bin/chmod 0666 /sys/class/leds/rgb:kbd/brightness /sys/class/leds/rgb:kbd/multi_intensity"

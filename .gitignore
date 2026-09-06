@@ -1,0 +1,36 @@
+# third-party reference material (downloaded for the investigation)
+reference/
+win/
+
+# captures from the hardware probe
+logs/
+dsdt.dat
+
+# python
+__pycache__/
+*.pyc
+
+# makepkg build dirs
+pkg/
+*.pkg.tar.*
+*.src.tar.*
+
+# gui (tauri)
+gui/node_modules/
+gui/dist/
+gui/src-tauri/target/
+gui/src-tauri/gen/
+
+# kernel module build artifacts
+kernel/*.o
+kernel/*.ko
+kernel/*.mod
+kernel/*.mod.c
+kernel/.*.cmd
+kernel/Module.symvers
+kernel/modules.order
+
+# local agent tooling (not part of the project)
+.agents/
+.claude/
+skills-lock.json

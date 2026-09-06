@@ -1,0 +1,9 @@
+#!/bin/sh
+# Re-apply the keyboard backlight after resume: the EC forgets the LED state
+# while the machine is suspended.
+case "$1" in
+    post)
+        [ -f /var/lib/g5kbd/state.json ] && /usr/bin/g5kbd restore >/dev/null 2>&1
+        ;;
+esac
+exit 0

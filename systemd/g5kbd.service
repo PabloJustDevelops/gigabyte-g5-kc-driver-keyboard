@@ -1,0 +1,13 @@
+[Unit]
+Description=Restore Gigabyte G5 keyboard backlight
+Documentation=file:///usr/share/doc/g5kbd/README.md
+After=systemd-modules-load.service
+ConditionPathExists=/var/lib/g5kbd/state.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/g5kbd restore
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target
