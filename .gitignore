@@ -33,4 +33,5 @@ kernel/modules.order
 # local agent tooling (not part of the project)
 .agents/
 .claude/
+.commandcode/
 skills-lock.json

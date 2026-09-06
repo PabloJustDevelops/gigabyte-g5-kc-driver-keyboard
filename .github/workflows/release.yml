@@ -1,0 +1,70 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libxdo-dev \
+            file
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gui/src-tauri
+
+      - name: Build release bundles
+        working-directory: gui
+        run: |
+          npm ci
+          # beforeBuildCommand runs vite, then cargo builds the release binary
+          # with the frontend embedded (custom-protocol feature).
+          npm run tauri -- build --bundles deb
+
+      - name: Stage artifacts
+        run: |
+          mkdir -p dist-release
+          cp gui/src-tauri/target/release/g5kbd-gui dist-release/
+          cp gui/src-tauri/target/release/bundle/deb/*.deb dist-release/
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist-release/*
+          generate_release_notes: true
+          body: |
+            ## g5kbd ${{ github.ref_name }}
+
+            - `g5kbd-gui` — standalone Tauri binary (needs the `g5kbd` CLI
+              installed alongside: `sudo ./install.sh`)
+            - `*.deb` — Debian/Ubuntu bundle of the GUI
+
+            The kernel module is not shipped in releases: it must be built for
+            the running kernel (`sudo ./install.sh` or the PKGBUILD does it).
