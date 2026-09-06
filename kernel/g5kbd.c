@@ -35,6 +35,7 @@
 #include <linux/mutex.h>
 #include <linux/slab.h>
 #include <linux/uuid.h>
+#include <linux/version.h>
 
 #define DRV_NAME "g5kbd"
 
@@ -200,9 +201,15 @@ static int g5kbd_acpi_add(struct acpi_device *adev)
 	dev->subled[0].intensity = (color >> 16) & 0xff;
 	dev->subled[1].intensity = (color >> 8) & 0xff;
 	dev->subled[2].intensity = color & 0xff;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0)
+	/* struct mc_subled.max_intensity appeared in v7.2
+	 * (led-class-multicolor.h). On older kernels the member does not
+	 * exist and channels are implicitly 0..led_cdev.max_brightness
+	 * (255 here) — the same full-scale behaviour we declare here. */
 	dev->subled[0].max_intensity = 255;
 	dev->subled[1].max_intensity = 255;
 	dev->subled[2].max_intensity = 255;
+#endif
 
 	dev->mc.num_colors = 3;
 	dev->mc.subled_info = dev->subled;
