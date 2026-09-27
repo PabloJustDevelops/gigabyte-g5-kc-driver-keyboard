@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Gigabyte G5 Keyboard
+GenericName=Keyboard backlight control
+Comment=Colour, brightness and RGB effects for the Gigabyte G5 keyboard backlight
+Exec=g5kbd-gui
+Icon=g5kbd
+Terminal=false
+Categories=Settings;HardwareSettings;
+Keywords=keyboard;backlight;rgb;led;gigabyte;g5;kbd;
+StartupNotify=true
