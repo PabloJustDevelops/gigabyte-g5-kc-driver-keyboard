@@ -61,11 +61,20 @@ fi
 
 echo "==> Installing g5kbd"
 
-# ---------- 1. kernel module (native build against the running kernel) ------
+# ---------- 1. kernel module -------------------------------------------------
+# Native build against the running kernel — unless DKMS already owns the
+# module for it, in which case DKMS rebuilds it on every kernel update and
+# the native copy would only conflict with it.
 KREL="$(uname -r)"
 KVERDIR="/lib/modules/$KREL"
 MODDIR="$KVERDIR/extra"
-if [ -d "$KVERDIR/build" ]; then
+if command -v dkms >/dev/null 2>&1 \
+   && dkms status -m g5kbd 2>/dev/null | grep -q "$KREL"; then
+  echo "==> g5kbd is managed by DKMS for $KREL — skipping the native build"
+  if ! modprobe g5kbd 2>/dev/null; then
+    echo "    warning: modprobe g5kbd failed — check 'dmesg | tail'."
+  fi
+elif [ -d "$KVERDIR/build" ]; then
   echo "==> Building the kernel module for $KREL"
   ( cd "$KERNEL_DIR" && make >/dev/null )
   install -d "$MODDIR"
