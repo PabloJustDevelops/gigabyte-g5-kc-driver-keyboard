@@ -776,11 +776,16 @@ def main(argv) -> int:
         return 1
 
     # ``state`` and ``profile list`` only read files — no root needed.
-    # Everything else talks to the hardware, so auto-elevate unless we are
-    # root / dry-running / opted out.
-    needs_root = (args.cmd != "state"
-                  and not (args.cmd == "profile"
-                           and getattr(args, "profile_action", None) == "list"))
+    # Everything else talks to the hardware. The kernel LED node is
+    # world-writable through the udev rule, so root is only required by the
+    # raw-EC fallback (module not loaded, or G5KBD_BACKEND=ec).
+    readonly = (args.cmd == "state"
+                or (args.cmd == "profile"
+                    and getattr(args, "profile_action", None) == "list"))
+    led_writable = (os.environ.get("G5KBD_BACKEND") != "ec"
+                    and os.path.isdir(LED_PATH)
+                    and os.access(os.path.join(LED_PATH, "brightness"), os.W_OK))
+    needs_root = not readonly and not led_writable
     if (needs_root and os.geteuid() != 0
             and not os.environ.get("G5KBD_FAKE")
             and not os.environ.get("G5KBD_NO_SUDO")):

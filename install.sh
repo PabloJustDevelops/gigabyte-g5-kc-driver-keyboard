@@ -49,7 +49,10 @@ if [ "$UNINSTALL" = 1 ]; then
         /etc/modules-load.d/g5kbd.conf \
         /etc/udev/rules.d/99-g5kbd.rules \
         /usr/lib/systemd/system/g5kbd.service \
-        /usr/lib/systemd/system-sleep/g5kbd
+        /usr/lib/systemd/system-sleep/g5kbd \
+        /usr/share/applications/g5kbd-gui.desktop \
+        /usr/share/icons/hicolor/32x32/apps/g5kbd.png \
+        /usr/share/icons/hicolor/128x128/apps/g5kbd.png
   rm -rf /var/lib/g5kbd
   systemctl daemon-reload
   echo "==> Done. The keyboard goes back to its firmware default (blue) on reboot."
@@ -58,11 +61,20 @@ fi
 
 echo "==> Installing g5kbd"
 
-# ---------- 1. kernel module (native build against the running kernel) ------
+# ---------- 1. kernel module -------------------------------------------------
+# Native build against the running kernel — unless DKMS already owns the
+# module for it, in which case DKMS rebuilds it on every kernel update and
+# the native copy would only conflict with it.
 KREL="$(uname -r)"
 KVERDIR="/lib/modules/$KREL"
 MODDIR="$KVERDIR/extra"
-if [ -d "$KVERDIR/build" ]; then
+if command -v dkms >/dev/null 2>&1 \
+   && dkms status -m g5kbd 2>/dev/null | grep -q "$KREL"; then
+  echo "==> g5kbd is managed by DKMS for $KREL — skipping the native build"
+  if ! modprobe g5kbd 2>/dev/null; then
+    echo "    warning: modprobe g5kbd failed — check 'dmesg | tail'."
+  fi
+elif [ -d "$KVERDIR/build" ]; then
   echo "==> Building the kernel module for $KREL"
   ( cd "$KERNEL_DIR" && make >/dev/null )
   install -d "$MODDIR"
@@ -110,6 +122,20 @@ elif [ "$NO_GUI" = 0 ]; then
   echo "==> npm/cargo not found — skipping the GUI. To build it later:"
   echo "    cd gui && npm install && npm run tauri -- build --no-bundle"
   echo "    sudo install -m755 src-tauri/target/release/g5kbd-gui /usr/bin/g5kbd-gui"
+fi
+
+# ---------- 4b. desktop launcher -------------------------------------------
+# `tauri build --no-bundle` never generates a .desktop entry, so without this
+# the panel gets installed but stays invisible in the application menu.
+if [ -x /usr/bin/g5kbd-gui ]; then
+  echo "==> Installing the desktop launcher"
+  install -Dm644 "$GUI_DIR/g5kbd-gui.desktop" /usr/share/applications/g5kbd-gui.desktop
+  for s in 32x32 128x128; do
+    [ -f "$GUI_DIR/src-tauri/icons/$s.png" ] && \
+      install -Dm644 "$GUI_DIR/src-tauri/icons/$s.png" "/usr/share/icons/hicolor/$s/apps/g5kbd.png"
+  done
+  command -v update-desktop-database >/dev/null 2>&1 && \
+    update-desktop-database /usr/share/applications 2>/dev/null || true
 fi
 
 # ---------- 5. boot / suspend restore ----------
