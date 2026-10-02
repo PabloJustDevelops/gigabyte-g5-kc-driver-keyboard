@@ -154,23 +154,33 @@ Method: `sudo ./probe-fan.sh` walks the modes by ear; a programmed load
   installed)". That deserves a real, clickable "authenticate" affordance.
 * **A tray/indicator applet** showing mode + temperature, since the panel is
   not always open.
-* The panel has never been through a visual test under the current vite 8 /
-  TypeScript 7 toolchain — build-verified only.
+* **The GPUI panel has never been through a visual test.** Porting the UI from
+  the Tauri/webview build to native GPUI removed the browser and the Node
+  toolchain, but the window is still build- and unit-verified only: nobody has
+  clicked through it on a real screen. Everything below the panel (CLIs,
+  daemon, driver) is exercised on hardware as before.
+* **Curve editing is fixed at five points.** `g5fan curve set` takes 2..5 and
+  the old web panel could add and remove points; the GPUI editor always shows
+  five. The CLI remains the way to set a shorter curve.
 
 ### 8. Packaging and CI
 
-* **`PKGBUILD`'s `source` array is maintained by hand** (every GUI file, the
-  docs, each systemd unit). Adding a file and forgetting the array is a
-  silent packaging bug — the `SKIP` sums hide it. A CI check that every file
-  listed under `gui/src`/`docs`/`systemd` appears in `source` (and vice
+* **`PKGBUILD`'s `source` array is maintained by hand** (every panel source
+  file, the docs, each systemd unit). Adding a file and forgetting the array
+  is a silent packaging bug — the `SKIP` sums hide it. A CI check that every
+  file listed under `gui/src`/`docs`/`systemd` appears in `source` (and vice
   versa) would end it.
 * **The CI kernel has `CONFIG_LEDS_CLASS_MULTICOLOR` disabled**, so the
   kernel job builds with `KBUILD_MODPOST_WARN=1` and can never link. Build
   against a real kernel config (container or an Arch image) to get a green
   modpost.
-* **No test runs against the GUI's own code**; `tsc` + `vite build` catch
-  types, nothing catches behaviour. Vitest on `lib/api.ts`'s parsers (they
-  have been the source of two bugs already) is the cheap start.
+* **Nothing drives the panel's own code.** The rewrite into Rust did bring
+  unit tests (`gui/src/backend/fan.rs` pins the `g5fan status --json` field
+  contract and mirrors the CLI's curve validation; `theme.rs` covers hex
+  parsing), and `cargo clippy -D warnings` now watches the panel. What is
+  still missing is anything that renders a view and asserts it: GPUI ships a
+  test harness (`gpui_kit::test`), and a test that mounts `Panel` and checks
+  the four views build would catch the next wiring mistake.
 * **No AUR package and no GitHub release automation for the CLI alone**;
   `release.yml` builds the `.deb` + binary on a `v*` tag.
 * `install.sh` used to leave the docs behind (only the PKGBUILD installed

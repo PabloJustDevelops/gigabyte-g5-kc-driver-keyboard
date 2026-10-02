@@ -1,0 +1,24 @@
+[package]
+name = "g5kbd-gui"
+version = "0.4.0"
+description = "Gigabyte G5 keyboard backlight & fan control panel, built with GPUI"
+edition = "2024"
+license = "MIT"
+
+[[bin]]
+name = "g5kbd-gui"
+path = "src/main.rs"
+
+[dependencies]
+# One dependency for GPUI + the styled component library (gpui_kit::* IS gpui;
+# the component widgets live under gpui_kit::component). gpui-kit pins the
+# matching gpui-pre-* snapshot crates itself, so nothing else is needed here.
+gpui-kit = "0.7.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+libc = "0.2"
+
+[profile.release]
+# The panel is small and latency-sensitive (polls the fan daemon every 3 s);
+# opt-level 2 keeps the binary lean without the codegen-time of 3.
+opt-level = 2
