@@ -48,6 +48,37 @@
 #define G5KBD_ARG_SUB_RGB_ZONE_0	0xF0000000UL
 #define G5KBD_ARG_SUB_RGB_BRIGHTNESS	0xF4000000UL
 
+/*
+ * Fan control, decoded from the same DSDT (see ../docs/FAN-RESEARCH.md).
+ *
+ * Both fan commands go through the *same* SCMD dispatcher that serves the
+ * keyboard command 0x67, so they take a plain integer argument:
+ *
+ *   0x68  set duty.  arg = 4 bytes, one per fan: [7:0]=fan1 (CPU),
+ *         [15:8]=fan2 (GPU), [23:16]=fan3, [31:24]=fan4. The AML turns
+ *         that into four separate mailbox writes FDAT=1..4, FBUF=duty,
+ *         FCMD=0xC1 — one per fan, *every* call. There is no way to name a
+ *         single fan: the other three bytes are written too, so a zero there
+ *         stops the fan. That is why the sysfs side is a single `fan_duty`
+ *         taking both duties, and not one attribute per fan.
+ *   0x69  hand fans back to the firmware curve. arg is a bitmask; bit N
+ *         releases fan N+1. Each set bit becomes FDAT=0xFF, FBUF=fan,
+ *         FCMD=0xC1.
+ *
+ * There is deliberately no fan-*curve* command here. The firmware's curve
+ * table (function 0x0E -> CC30 -> PK0E) only accepts two of its four points
+ * from the OS, and each fan also carries three RPM set-point words that the
+ * matching read command (0x0D) never returns. Writing that table therefore
+ * means clobbering values we cannot read back, and whether the EC honours it
+ * at all is unverified. `g5fan` shapes the ramp from userspace by driving the
+ * duty above instead — see docs/FAN-RESEARCH.md.
+ */
+#define G5KBD_CMD_SET_FAN_DUTY		0x68
+#define G5KBD_CMD_SET_FAN_AUTO		0x69
+
+#define G5FAN_FAN_COUNT		2	/* CPU + GPU on this chassis */
+#define G5FAN_ALL_FANS		((1u << G5FAN_FAN_COUNT) - 1)	/* 0x03 */
+
 static bool force;
 module_param(force, bool, 0444);
 MODULE_PARM_DESC(force, "bind even when DMI is not Gigabyte G5/G6/G7");
@@ -65,6 +96,13 @@ struct g5kbd_dev {
 	struct led_classdev_mc mc;
 	struct mc_subled subled[3];	/* R, G, B */
 	struct mutex lock;
+	/*
+	 * True once a duty has been pinned. Fan telemetry is *not* mirrored
+	 * here: the authoritative duty/RPM live in the EC, and the driver has
+	 * no reliable way to read them back (see docs/FAN-RESEARCH.md), so
+	 * rather than publish a stale copy we leave reading to g5fan.
+	 */
+	bool fan_manual;
 };
 
 /* _DSM UUID 93f224e4-fbdc-4bbf-add6-db71bdc0afad (little-endian wire order) */
@@ -97,6 +135,58 @@ static int g5kbd_eval_dsm(acpi_handle handle, u64 func, u32 arg)
 		status = AE_ERROR;	/* Clevo convention: 0xffffffff = nope */
 	ACPI_FREE(ret);
 	return ACPI_SUCCESS(status) ? 0 : -EIO;
+}
+
+/* Release both fans (or a subset) back to the firmware's own curve. */
+static int g5fan_set_auto(struct g5kbd_dev *dev, unsigned int mask)
+{
+	if (!mask || (mask & ~G5FAN_ALL_FANS))
+		return -EINVAL;
+	return g5kbd_eval_dsm(dev->handle, G5KBD_CMD_SET_FAN_AUTO, mask);
+}
+
+/* EC registers holding the duty each fan is currently running at. */
+#define G5FAN_DUTY_REG_CPU	0xCE
+#define G5FAN_DUTY_REG_GPU	0xCF
+
+static int g5fan_read_duty(int fan, u8 *duty)
+{
+	u8 reg;
+
+	switch (fan) {
+	case 0:
+		reg = G5FAN_DUTY_REG_CPU;
+		break;
+	case 1:
+		reg = G5FAN_DUTY_REG_GPU;
+		break;
+	default:
+		return -EINVAL;
+	}
+	return ec_read(reg, duty);
+}
+
+/*
+ * Pin the fans to fixed duties (0..255 each).
+ *
+ * Both are required, because that is the shape of the hardware: function
+ * 0x68 assigns all four fans on every call. A read-modify-write built out of
+ * `ec_read()` looks tempting and does not work — the EC's duty read-back lags
+ * the mailbox write by more than the gap between two sysfs writes, so the
+ * second write reads the *old* duty back and restores it over the first. That
+ * is exactly how `g5fan doctor --write` came to report "35 % -> 35 % IGNORED"
+ * for fan 1 while fan 2 took its new value. The callers all know both duties
+ * anyway, so they hand over both and nothing is read here at all.
+ */
+static int g5fan_set_duties(struct g5kbd_dev *dev, const u8 *duty)
+{
+	u32 arg = 0;
+	int i;
+
+	for (i = 0; i < G5FAN_FAN_COUNT; i++)
+		arg |= (u32)duty[i] << (i * 8);
+
+	return g5kbd_eval_dsm(dev->handle, G5KBD_CMD_SET_FAN_DUTY, arg);
 }
 
 /* Push current state (intensities + overall brightness) to the hardware. */
@@ -172,11 +262,117 @@ static ssize_t color_store(struct device *dev, struct device_attribute *attr,
 
 static DEVICE_ATTR_WO(color);
 
+/* ------------------------------------------------------------------ */
+/* Fan control                                                        */
+/* ------------------------------------------------------------------ */
+
+static struct g5kbd_dev *g5fan_from_dev(struct device *dev)
+{
+	return dev_get_drvdata(dev);
+}
+
+/* "auto" (firmware curve) or "manual" (we pin the duty). */
+static ssize_t fan_mode_show(struct device *dev, struct device_attribute *attr,
+			     char *buf)
+{
+	struct g5kbd_dev *g5 = g5fan_from_dev(dev);
+
+	return sysfs_emit(buf, "%s\n", g5->fan_manual ? "manual" : "auto");
+}
+
+static ssize_t fan_mode_store(struct device *dev, struct device_attribute *attr,
+			      const char *buf, size_t count)
+{
+	struct g5kbd_dev *g5 = g5fan_from_dev(dev);
+	int ret;
+
+	/*
+	 * Only "auto" is accepted. "manual" deliberately is not: entering manual
+	 * mode is what *writing a duty* does, and accepting the bare word would
+	 * mean pinning both fans to duties we do not know (zero on a freshly
+	 * loaded module), i.e. stopping them.
+	 */
+	if (!sysfs_streq(buf, "auto"))
+		return -EINVAL;
+
+	mutex_lock(&g5->lock);
+	ret = g5fan_set_auto(g5, G5FAN_ALL_FANS);
+	if (!ret)
+		g5->fan_manual = false;
+	mutex_unlock(&g5->lock);
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_RW(fan_mode);
+
+/*
+ * The duty of both fans at once, 0..255 each, as "cpu gpu".
+ *
+ * One attribute rather than one per fan because that is what the firmware
+ * command is (see g5fan_set_duties): naming a single fan is not something
+ * this EC can do, and pretending otherwise is how the CPU fan ends up at
+ * zero. Every caller — turbo, manual, the curve daemon — computes both duty
+ * values anyway, so nothing is lost.
+ *
+ * Reading answers from the EC, so it is what the fans are really doing
+ * rather than a copy of the last write.
+ */
+static ssize_t fan_duty_show(struct device *dev, struct device_attribute *attr,
+			     char *buf)
+{
+	struct g5kbd_dev *g5 = g5fan_from_dev(dev);
+	u8 duty[G5FAN_FAN_COUNT];
+	int i, ret = 0;
+
+	mutex_lock(&g5->lock);
+	for (i = 0; i < G5FAN_FAN_COUNT; i++) {
+		ret = g5fan_read_duty(i, &duty[i]);
+		if (ret)
+			break;
+	}
+	mutex_unlock(&g5->lock);
+	if (ret)
+		return ret;
+
+	return sysfs_emit(buf, "%u %u\n", duty[0], duty[1]);
+}
+
+static ssize_t fan_duty_store(struct device *dev, struct device_attribute *attr,
+			      const char *buf, size_t count)
+{
+	struct g5kbd_dev *g5 = g5fan_from_dev(dev);
+	unsigned int cpu, gpu;
+	u8 duty[G5FAN_FAN_COUNT];
+	int ret;
+
+	if (sscanf(buf, "%u %u", &cpu, &gpu) != 2)
+		return -EINVAL;
+	if (cpu > 255 || gpu > 255)
+		return -EINVAL;
+
+	duty[0] = cpu;
+	duty[1] = gpu;
+
+	mutex_lock(&g5->lock);
+	ret = g5fan_set_duties(g5, duty);
+	if (!ret)
+		g5->fan_manual = true;
+	mutex_unlock(&g5->lock);
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_RW(fan_duty);
+
 static struct attribute *g5kbd_attrs[] = {
 	&dev_attr_color.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(g5kbd);
+
+static struct attribute *g5fan_attrs[] = {
+	&dev_attr_fan_mode.attr,
+	&dev_attr_fan_duty.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(g5fan);
 
 static int g5kbd_acpi_add(struct acpi_device *adev)
 {
@@ -196,6 +392,8 @@ static int g5kbd_acpi_add(struct acpi_device *adev)
 	mutex_init(&dev->lock);
 
 	dev->subled[0].color_index = LED_COLOR_ID_RED;
+	/* Fans start on the firmware curve; g5fan pins a duty only on demand. */
+	dev->fan_manual = false;
 	dev->subled[1].color_index = LED_COLOR_ID_GREEN;
 	dev->subled[2].color_index = LED_COLOR_ID_BLUE;
 	dev->subled[0].intensity = (color >> 16) & 0xff;
@@ -223,7 +421,31 @@ static int g5kbd_acpi_add(struct acpi_device *adev)
 		goto err;
 
 	dev_set_drvdata(&adev->dev, dev);
-	dev_info(&adev->dev, "Gigabyte G5 keyboard backlight registered\n");
+	/*
+	 * The fan attributes go on the ACPI platform device itself. That device
+	 * is already registered with the driver core by the time probe() runs,
+	 * so simply assigning adev->dev.groups here would be silently ignored —
+	 * sysfs files are created during device_add(), long before this point.
+	 * devm_device_add_group() is the supported way to add attributes to a
+	 * device that is already live.
+	 */
+	rc = devm_device_add_group(&adev->dev, g5fan_groups[0]);
+	if (rc) {
+		dev_err(&adev->dev, "failed to add fan attributes: %d\n", rc);
+		/*
+		 * The ACPI device is already live, so take the driver data back
+		 * out before freeing: a failed probe does not run remove(), and a
+		 * dangling pointer there is a use-after-free waiting for the next
+		 * sysfs access.
+		 */
+		dev_set_drvdata(&adev->dev, NULL);
+		devm_led_classdev_unregister(&adev->dev, &dev->mc.led_cdev);
+		mutex_destroy(&dev->lock);
+		kfree(dev);
+		return rc;
+	}
+
+	dev_info(&adev->dev, "Gigabyte G5 keyboard backlight + fan control registered\n");
 
 	/* Apply the configured default (EC forgets everything at power-on). */
 	if (brightness > 255)
@@ -242,10 +464,12 @@ static void g5kbd_acpi_remove(struct acpi_device *adev)
 {
 	struct g5kbd_dev *dev = dev_get_drvdata(&adev->dev);
 
-	/* Leave the keyboard in a sane state (master off). */
+	/* Leave the keyboard in a sane state (master off) and hand the fans
+	 * back to the firmware curve — never leave a manual duty pinned. */
 	if (dev) {
 		g5kbd_eval_dsm(dev->handle, G5KBD_CMD_SET_KB_RGB_LEDS,
 			       G5KBD_ARG_KB_DISABLE);
+		g5fan_set_auto(dev, G5FAN_ALL_FANS);
 		mutex_destroy(&dev->lock);
 	}
 }
@@ -306,4 +530,4 @@ module_exit(g5kbd_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("PabloJustDevelops");
-MODULE_DESCRIPTION("Gigabyte G5 (Clevo-ODM) keyboard backlight driver");
+MODULE_DESCRIPTION("Gigabyte G5 (Clevo-ODM) keyboard backlight and fan control driver");

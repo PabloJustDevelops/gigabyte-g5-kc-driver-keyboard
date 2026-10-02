@@ -788,3 +788,98 @@ input[type="range"]:disabled::-webkit-slider-thumb { background: #565d68; cursor
   opacity: 0.45;
   pointer-events: none;
 }
+
+/* ── small action button ──────────────────────────────── */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 12px;
+  font-size: 12px; font-weight: 600;
+  font-family: var(--font);
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+.btn:hover:not(:disabled) { border-color: var(--line-strong); }
+.btn:active:not(:disabled) { background: var(--panel); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+/* ── fans ──────────────────────────────────────────────── */
+/* five modes, so flow rather than the fixed 2-up .modes grid */
+.fan-modes { grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); }
+
+.fan-readout {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 9px; margin-top: 4px;
+}
+.fan-gauge {
+  padding: 11px 13px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.fan-gauge-head {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.06em;
+}
+.fan-ico { width: 14px; height: 14px; color: var(--muted); }
+.fan-gauge-value {
+  margin-top: 5px;
+  font-family: var(--mono);
+  font-size: 26px; font-weight: 600; line-height: 1.05;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.fan-gauge-value small { font-size: 13px; color: var(--muted); margin-left: 2px; }
+.fan-gauge-value.hot { color: var(--warn); }
+.fan-gauge-sub {
+  margin-top: 2px;
+  font-family: var(--mono);
+  font-size: 11px; color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+.fan-bar {
+  margin-top: 9px; height: 3px;
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+  border-radius: 999px; overflow: hidden;
+}
+.fan-bar i {
+  display: block; height: 100%;
+  background: var(--accent);
+  transition: width 320ms ease;
+}
+
+.fan-manual { margin: 2px 0 11px; }
+.fan-manual-row { margin-top: 11px; }
+
+.fan-curve { display: grid; gap: 10px; margin: 3px 0 12px; }
+.fan-curve-field {
+  display: grid; grid-template-columns: 44px 1fr 34px;
+  align-items: center; gap: 11px;
+}
+.fan-curve-field > span { font-size: 12px; color: var(--muted); }
+.fan-curve-field > span small { color: var(--faint); }
+.fan-curve-field > output {
+  font-family: var(--mono); font-size: 12px;
+  color: var(--text); text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.fan-curve-row { margin-top: 2px; }
+
+.fan-err { color: var(--danger); }
+
+.fan-watchdog-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 10px;
+  font-size: 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.fan-watchdog-chip.on { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, transparent); }
+.fan-watchdog-chip.off { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }

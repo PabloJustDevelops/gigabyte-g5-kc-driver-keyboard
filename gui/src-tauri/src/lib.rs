@@ -74,6 +74,143 @@ async fn run_cli_async(args: Vec<String>) -> Result<String, String> {
 }
 
 // ---------------------------------------------------------------------------
+// Fans
+//
+// *Changing* a fan is root-only: the ACPI EC is reachable through ec_sys
+// debugfs, which no udev rule can hand to the desktop user. `g5fan` therefore
+// needs a real authentication, and the panel gets it through polkit
+// (dev.g5kbd.fan.manage, installed to /usr/share/polkit-1/actions/ by
+// install.sh). We must not set G5FAN_NO_SUDO on that path, or g5fan's own
+// elevation would be skipped instead.
+//
+// *Looking* at a fan is not privileged at all. The fan daemon republishes
+// what it can see to /run/g5fan/status.json every tick (`g5fan status
+// --cached`), and that is the only thing the panel reads — so opening the
+// panel never raises a password dialog, and no poll can.
+// ---------------------------------------------------------------------------
+
+const G5FAN: &str = "g5fan";
+
+/// Is `g5fan` on PATH and is the polkit policy installed?
+fn fan_available() -> bool {
+    std::path::Path::new("/usr/bin/g5fan").exists()
+}
+
+/// Everything the panel needs to draw the fans, as `g5fan status --json`
+/// reports it. Field names are the CLI's, so the two cannot drift apart.
+#[derive(Serialize, serde::Deserialize)]
+struct RawFanReading {
+    label: String,
+    duty_pct: Option<u8>,
+    rpm: Option<u32>,
+    tacho: Option<u32>,
+}
+
+#[derive(Serialize, serde::Deserialize)]
+struct RawFanStatus {
+    mode: String,
+    backend: String,
+    driver: bool,
+    manual_duty: Option<u8>,
+    /// the curve actually in play (null unless a curve mode is selected)
+    curve: Option<Vec<[u32; 2]>>,
+    /// the saved custom curve, whether or not it is in play
+    custom_curve: Vec<[u32; 2]>,
+    /// the built-in presets, so the panel never hard-codes a copy
+    presets: std::collections::BTreeMap<String, Vec<[u32; 2]>>,
+    fans: Vec<RawFanReading>,
+    cpu_temp_c: Option<i32>,
+    gpu_temp_c: Option<i32>,
+    ceiling_c: f64,
+    daemon: bool,
+    age_s: f64,
+    stale: bool,
+}
+
+/// Run a fan command that needs no privileges at all.
+///
+/// Never `pkexec`, and `G5FAN_NO_SUDO` is set so that even a mistake here
+/// cannot turn a read into a prompt or an escalation.
+fn run_fan_cli_unprivileged(args: &[&str]) -> Result<String, String> {
+    if !fan_available() {
+        return Err("g5fan is not installed — re-run: sudo ./install.sh".into());
+    }
+    let out = Command::new(G5FAN)
+        .args(args)
+        .env("G5FAN_NO_SUDO", "1")
+        .output()
+        .map_err(|e| format!("cannot run `{G5FAN}`: {e}"))?;
+    if out.status.success() {
+        return Ok(String::from_utf8_lossy(&out.stdout).trim().to_string());
+    }
+    // Reads explain themselves in one or two lines; show all of them, since
+    // the second line is usually the fix ("start g5fan-watchdog.service").
+    let err = String::from_utf8_lossy(&out.stderr);
+    let text = err
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    Err(if text.is_empty() {
+        format!("g5fan {}: unknown error", args.join(" "))
+    } else {
+        text
+    })
+}
+
+fn run_fan_cli(args: &[&str]) -> Result<String, String> {
+    if !fan_available() {
+        return Err("g5fan is not installed — re-run: sudo ./install.sh".into());
+    }
+
+    // Already root (someone ran the GUI as root, or a test): no elevation.
+    let mut cmd = if unsafe { libc::geteuid() } == 0 {
+        let mut c = Command::new(G5FAN);
+        c.env("G5FAN_NO_SUDO", "1");
+        c
+    } else {
+        // pkexec gives us the polkit agent's prompt. allow_gui lets it render
+        // the dialog against our window instead of needing a terminal.
+        let mut c = Command::new("pkexec");
+        c.arg(G5FAN);
+        c
+    };
+
+    let out = cmd
+        .args(args)
+        .output()
+        .map_err(|e| format!("cannot run `{G5FAN}`: {e}"))?;
+
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    } else {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let tail = err
+            .trim()
+            .lines()
+            .last()
+            .unwrap_or("unknown error")
+            .to_string();
+        // pkexec exits 126 when the user dismisses the password dialog.
+        if out.status.code() == Some(126) || out.status.code() == Some(127) {
+            return Err("fan control needs authentication (pkexec was cancelled \
+                        or is not installed)"
+                .into());
+        }
+        Err(format!("g5fan {}: {tail}", args.join(" ")))
+    }
+}
+
+async fn run_fan_cli_async(args: Vec<String>) -> Result<String, String> {
+    let handle = tauri::async_runtime::spawn_blocking(move || {
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        run_fan_cli(&refs)
+    });
+    handle.await.map_err(|e| format!("task join error: {e}"))?
+}
+
+// ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
 
@@ -232,6 +369,77 @@ async fn effect_stop() -> Result<String, String> {
 }
 
 // ---------------------------------------------------------------------------
+// Fan commands
+// ---------------------------------------------------------------------------
+
+/// The fans as of the fan daemon's last tick. No privileges, no prompt.
+#[tauri::command]
+async fn fan_status() -> Result<RawFanStatus, String> {
+    let out = run_fan_cli_unprivileged(&["status", "--cached", "--json"])?;
+    serde_json::from_str(&out).map_err(|e| format!("could not read `g5fan status --json`: {e}"))
+}
+
+#[tauri::command]
+async fn fan_set_mode(mode: String) -> Result<String, String> {
+    let mode = match mode.as_str() {
+        // `mode` is the general form; these two read better as their own verbs
+        // and are what the CLI documents, so pass them through untouched.
+        m @ ("auto" | "turbo" | "silent" | "maxq" | "custom") => m.to_string(),
+        m if m.starts_with("manual:") => m.to_string(),
+        _ => return Err(format!("unknown fan mode {mode:?}")),
+    };
+    run_fan_cli_async(vec!["mode".into(), mode]).await
+}
+
+#[tauri::command]
+async fn fan_set_manual(pct: u8) -> Result<String, String> {
+    run_fan_cli_async(vec!["manual".into(), pct.min(100).to_string()]).await
+}
+
+/// Write the custom duty curve: monotonic (temperature °C, duty %) points.
+///
+/// The ramp is evaluated by the `g5fan` daemon, not by the EC firmware — see
+/// docs/FAN-RESEARCH.md for why (the firmware's own table only exposes two of
+/// its four points and hides its RPM set-points).
+#[tauri::command]
+async fn fan_set_curve(points: Vec<[u32; 2]>) -> Result<String, String> {
+    if !(2..=5).contains(&points.len()) {
+        return Err(format!(
+            "a curve needs 2 to 5 points (got {})",
+            points.len()
+        ));
+    }
+    for w in points.windows(2) {
+        if w[1][0] <= w[0][0] {
+            return Err(format!(
+                "temperatures must rise: {} °C then {} °C",
+                w[0][0], w[1][0]
+            ));
+        }
+        if w[1][1] < w[0][1] {
+            return Err(format!(
+                "duty falls from {}% at {} °C to {}% at {} °C — a fan must not \
+                 slow down as it gets hotter",
+                w[0][1], w[0][0], w[1][1], w[1][0]
+            ));
+        }
+    }
+    let mut args: Vec<String> = vec!["curve".into(), "set".into()];
+    args.extend(points.iter().map(|p| format!("{}:{}", p[0], p[1].min(100))));
+    run_fan_cli_async(args).await
+}
+
+/// Is the watchdog unit running?
+#[tauri::command]
+async fn fan_watchdog() -> Result<String, String> {
+    let out = Command::new("systemctl")
+        .args(["is-active", "g5fan-watchdog.service"])
+        .output()
+        .map_err(|e| format!("cannot run systemctl: {e}"))?;
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+// ---------------------------------------------------------------------------
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -249,7 +457,85 @@ pub fn run() {
             profile_save,
             profile_apply,
             profile_delete,
+            fan_status,
+            fan_set_mode,
+            fan_set_manual,
+            fan_set_curve,
+            fan_watchdog,
         ])
         .run(tauri::generate_context!())
         .expect("error while running g5kbd-gui");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The panel's only way of looking at the fans is `g5fan status --json
+    /// --cached`, so the field names below are a contract with the CLI (see
+    /// `status_data` in src/g5fan.py and its key-set test in
+    /// tests/test_g5fan.py). If the CLI renames one, this breaks here instead
+    /// of the panel quietly drawing an empty fan list.
+    const SAMPLE: &str = r#"{
+        "mode": "silent",
+        "backend": "kernel",
+        "driver": true,
+        "manual_duty": null,
+        "curve": [[45, 15], [60, 25], [72, 40], [82, 65], [92, 100]],
+        "custom_curve": [[50, 25], [65, 40], [75, 60], [85, 80], [95, 100]],
+        "presets": {
+            "silent": [[45, 15]], "maxq": [[48, 12]], "custom": [[50, 25]]
+        },
+        "fans": [
+            {"label": "CPU", "duty_pct": 20, "rpm": 2218, "tacho": 972},
+            {"label": "GPU", "duty_pct": 15, "rpm": 1737, "tacho": 1241}
+        ],
+        "cpu_temp_c": 52,
+        "gpu_temp_c": 44,
+        "ceiling_c": 100.0,
+        "daemon": true,
+        "age_s": 1.1,
+        "stale": false
+    }"#;
+
+    #[test]
+    fn parses_a_fan_status_snapshot() {
+        let s: RawFanStatus = serde_json::from_str(SAMPLE).expect("parse");
+        assert_eq!(s.mode, "silent");
+        assert_eq!(s.backend, "kernel");
+        assert!(s.driver && s.daemon && !s.stale);
+        assert_eq!(s.manual_duty, None);
+        assert_eq!(s.curve.as_ref().map(Vec::len), Some(5));
+        assert_eq!(s.custom_curve.len(), 5);
+        assert_eq!(s.presets["custom"], vec![[50, 25]]);
+        assert_eq!(s.fans.len(), 2);
+        assert_eq!(s.fans[0].label, "CPU");
+        assert_eq!(s.fans[0].duty_pct, Some(20));
+        assert_eq!(s.fans[0].rpm, Some(2218));
+        assert_eq!(s.fans[0].tacho, Some(972));
+        assert_eq!(s.cpu_temp_c, Some(52));
+        assert_eq!(s.gpu_temp_c, Some(44));
+        assert_eq!(s.age_s, 1.1);
+    }
+
+    /// A fan the EC cannot report, and a machine whose EC gives no
+    /// temperature, must come through as nulls rather than as a parse error.
+    #[test]
+    fn tolerates_missing_readings() {
+        let json = r#"{
+            "mode": "auto", "backend": "ec", "driver": false,
+            "manual_duty": null, "curve": null,
+            "custom_curve": [[50, 25], [95, 100]],
+            "presets": {},
+            "fans": [{"label": "CPU", "duty_pct": null,
+                      "rpm": null, "tacho": null}],
+            "cpu_temp_c": null, "gpu_temp_c": null, "ceiling_c": 90.0,
+            "daemon": false, "age_s": 0.0, "stale": true
+        }"#;
+        let s: RawFanStatus = serde_json::from_str(json).expect("parse");
+        assert_eq!(s.fans[0].duty_pct, None);
+        assert_eq!(s.fans[0].rpm, None);
+        assert_eq!(s.cpu_temp_c, None);
+        assert!(s.curve.is_none() && s.stale && !s.driver);
+    }
 }

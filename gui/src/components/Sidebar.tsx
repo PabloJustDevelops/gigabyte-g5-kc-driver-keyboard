@@ -1,5 +1,6 @@
 import { Gauge, House, Keyboard, Palette, type LucideIcon } from "lucide-react";
 import { cn } from "../lib/cn";
+import { WatchdogChip } from "../views/PerformanceView";
 
 export type ViewId = "home" | "lighting" | "profiles" | "performance";
 
@@ -24,7 +25,7 @@ export function Sidebar({ active, effectRunning, onNavigate }: Props) {
     { id: "profiles", label: "Profiles", icon: Palette },
   ];
   const system: Item[] = [
-    { id: "performance", label: "Performance", icon: Gauge, badge: "planned" },
+    { id: "performance", label: "Fans", icon: Gauge },
   ];
 
   const renderItem = (it: Item) => {
@@ -71,9 +72,10 @@ export function Sidebar({ active, effectRunning, onNavigate }: Props) {
 
       <div className="side-foot">
         <div>
-          g5kbd <b>v0.3.0</b>
+          g5kbd <b>v0.4.0</b>
         </div>
         <div>kernel driver · CLI · GUI</div>
+        <WatchdogChip />
       </div>
     </aside>
   );

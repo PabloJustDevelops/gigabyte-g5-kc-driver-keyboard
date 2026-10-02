@@ -13,7 +13,7 @@ const TITLES: Record<ViewId, [string, string]> = {
   home: ["Overview", "keyboard state at a glance"],
   lighting: ["Lighting", "colour · brightness · effects"],
   profiles: ["Profiles", "saved colour sets"],
-  performance: ["Performance", "power & fan profiles (planned)"],
+  performance: ["Fans", "fan modes, duty and curve"],
 };
 
 export default function App() {

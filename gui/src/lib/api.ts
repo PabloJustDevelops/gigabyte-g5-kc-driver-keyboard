@@ -6,7 +6,14 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import type { DeviceState, EffectMode, Profile } from "./types";
+import type {
+  CurvePoint,
+  DeviceState,
+  EffectMode,
+  FanMode,
+  FanStatus,
+  Profile,
+} from "./types";
 import { hexToRgb, rgbToHex, type Rgb } from "./color";
 
 export const IS_TAURI = "__TAURI_INTERNALS__" in window;
@@ -102,6 +109,93 @@ export async function profileApply(name: string): Promise<string> {
 export async function profileDelete(name: string): Promise<string> {
   if (!IS_TAURI) return mockProfileDelete(name);
   return invoke<string>("profile_delete", { name });
+}
+
+/* ── fans ──────────────────────────────────────────────────── */
+
+/** `g5fan status --json` as the Rust core hands it over (still snake_case). */
+interface ServerFanStatus {
+  mode: string;
+  backend: string;
+  driver: boolean;
+  manual_duty: number | null;
+  curve: [number, number][] | null;
+  custom_curve: [number, number][];
+  presets: Record<string, [number, number][]>;
+  fans: {
+    label: string;
+    duty_pct: number | null;
+    rpm: number | null;
+    tacho: number | null;
+  }[];
+  cpu_temp_c: number | null;
+  gpu_temp_c: number | null;
+  ceiling_c: number;
+  daemon: boolean;
+  age_s: number;
+  stale: boolean;
+}
+
+const toPoints = (pts: [number, number][]): CurvePoint[] =>
+  pts.map(([t, d]) => [t, d] as CurvePoint);
+
+const toFanStatus = (s: ServerFanStatus): FanStatus => ({
+  mode: s.mode,
+  backend: s.backend,
+  driver: s.driver,
+  manualDuty: s.manual_duty,
+  curve: s.curve ? toPoints(s.curve) : null,
+  customCurve: toPoints(s.custom_curve),
+  presets: Object.fromEntries(
+    Object.entries(s.presets).map(([name, pts]) => [name, toPoints(pts)]),
+  ),
+  fans: s.fans.map((f) => ({
+    label: f.label,
+    duty: f.duty_pct,
+    rpm: f.rpm,
+    tacho: f.tacho,
+  })),
+  cpuTempC: s.cpu_temp_c,
+  gpuTempC: s.gpu_temp_c,
+  ceilingC: s.ceiling_c,
+  daemon: s.daemon,
+  ageS: s.age_s,
+  stale: s.stale,
+});
+
+/** What the fan daemon last saw, published to /run/g5fan every tick.
+ *
+ * Deliberately unprivileged: the panel must never raise a password dialog
+ * just to draw a fan, and polling every few seconds means it could not ask
+ * anyway. Only the writes below go through polkit. */
+export async function fanStatus(): Promise<FanStatus> {
+  if (!IS_TAURI) return mockFanStatus();
+  return toFanStatus(await invoke<ServerFanStatus>("fan_status"));
+}
+
+export async function fanSetMode(mode: FanMode | `manual:${number}`): Promise<string> {
+  if (!IS_TAURI) return mockFanSetMode(mode);
+  return invoke<string>("fan_set_mode", { mode });
+}
+
+export async function fanSetManual(pct: number): Promise<string> {
+  if (!IS_TAURI) return mockFanSetMode(`manual:${pct}`);
+  return invoke<string>("fan_set_manual", { pct: clamp(Math.round(pct), 0, 100) });
+}
+
+/** Write the custom curve; the daemon turns it into duty for the fans. */
+export async function fanSetCurve(points: CurvePoint[]): Promise<string> {
+  if (!IS_TAURI) return mockFanSetCurve(points);
+  return invoke<string>("fan_set_curve", { points });
+}
+
+export function formatCurve(points: CurvePoint[]): string {
+  return points.map(([t, d]) => `${t}:${d}`).join(" ");
+}
+
+export async function fanWatchdog(): Promise<boolean> {
+  if (!IS_TAURI) return mockFanWatchdog();
+  return (await invoke<string>("fan_watchdog")) === "active";
 }
 
 /* ── browser mock (mirrors the CLI semantics) ───────────── */
@@ -207,4 +301,82 @@ const mockProfileDelete = async (name: string): Promise<string> => {
   await delay();
   mockProfiles = mockProfiles.filter((p) => p[0] !== name);
   return `profile deleted: ${name}`;
+};
+
+/* ── fan mock ─────────────────────────────────────────────── */
+
+/* Mirrors g5fan's own presets (PROFILES in src/g5fan.py) — in Tauri they
+ * arrive in `presets`, so the panel never carries a second copy. */
+
+const mockFan = {
+  mode: "auto",
+  manualDuty: null as number | null,
+  customCurve: [[50, 25], [65, 40], [75, 60], [85, 80], [95, 100]] as CurvePoint[],
+};
+
+const MOCK_PRESETS: Record<string, CurvePoint[]> = {
+  silent: [[45, 15], [60, 25], [72, 40], [82, 65], [92, 100]],
+  maxq: [[48, 12], [62, 20], [75, 35], [85, 60], [92, 100]],
+  custom: mockFan.customCurve,
+};
+
+/** Duty that matches the mode, so a click is visible on the gauges. */
+function mockDutyFor(mode: string): number {
+  if (mode === "turbo") return 100;
+  if (mode === "manual") return mockFan.manualDuty ?? 50;
+  if (mode === "silent") return 18;
+  if (mode === "maxq") return 15;
+  if (mode === "custom") return 40;
+  return 35; // auto — the firmware curve at the mock temperatures
+}
+
+const mockRpm = (duty: number) => (duty <= 0 ? 0 : 600 + duty * 26);
+
+let mockDaemon = true;
+
+const mockFanStatus = async (): Promise<FanStatus> => {
+  await delay();
+  const cpuDuty = mockDutyFor(mockFan.mode);
+  const gpuDuty = Math.max(0, cpuDuty - 5);
+  return {
+    mode: mockFan.mode,
+    backend: "kernel (mock)",
+    driver: true,
+    manualDuty: mockFan.manualDuty,
+    curve: mockFan.mode in MOCK_PRESETS ? MOCK_PRESETS[mockFan.mode] : null,
+    customCurve: mockFan.customCurve.map((p) => [...p] as CurvePoint),
+    presets: MOCK_PRESETS,
+    fans: [
+      { label: "CPU", duty: cpuDuty, rpm: mockRpm(cpuDuty), tacho: 972 },
+      { label: "GPU", duty: gpuDuty, rpm: mockRpm(gpuDuty), tacho: 1020 },
+    ],
+    cpuTempC: 52,
+    gpuTempC: 44,
+    ceilingC: 100,
+    daemon: mockDaemon,
+    ageS: 1.2,
+    stale: false,
+  };
+};
+
+const mockFanSetMode = async (mode: string): Promise<string> => {
+  await delay();
+  mockFan.mode = mode.split(":")[0];
+  mockFan.manualDuty = mode.startsWith("manual")
+    ? parseInt(mode.split(":")[1] ?? "50", 10)
+    : null;
+  return `fans: ${mode}`;
+};
+
+const mockFanSetCurve = async (points: CurvePoint[]): Promise<string> => {
+  await delay();
+  mockFan.customCurve = points.map((p) => [...p] as CurvePoint);
+  MOCK_PRESETS.custom = mockFan.customCurve;
+  mockFan.mode = "custom";
+  return `custom curve set: ${formatCurve(points)}`;
+};
+
+const mockFanWatchdog = async (): Promise<boolean> => {
+  await delay();
+  return mockDaemon;
 };
