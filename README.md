@@ -1,36 +1,48 @@
-# g5kbd — Gigabyte G5 keyboard backlight for Linux
+# g5kbd — Gigabyte G5 keyboard backlight & fan control for Linux
 
 Colour / brightness / effects for the single-zone RGB keyboard of the
-**Gigabyte G5** (Clevo-ODM) gaming laptop on Linux, delivered as three layers:
+**Gigabyte G5** (Clevo-ODM) gaming laptop, plus CPU/GPU fan control, on Linux:
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│ GUI  g5kbd-gui  (Tauri v2: web UI + Rust core, no root)  │
+│ Panel g5kbd-gui  (native GPUI: one Rust binary, no root)│
 ├──────────────────────────────────────────────────────────┤
-│ CLI  g5kbd  (Python — the same commands, no GUI needed)  │
+│ CLI  g5kbd  (Python — keyboard; no GUI needed)           │
+│ CLI  g5fan  (Python — fans, profiles, thermal watchdog)  │
 ├──────────────────────────────────────────────────────────┤
 │ Standard API: /sys/class/leds/rgb:kbd  (LED multicolor)  │
 ├──────────────────────────────────────────────────────────┤
 │ Kernel driver  g5kbd.ko  (ACPI platform driver on        │
-│ CLV0001 -> evaluates the firmware _DSM, cmd 0x67)        │
+│ CLV0001 -> evaluates the firmware _DSM: cmd 0x67 for the  │
+│ keyboard, 0x68/0x69 to set the fan duty / hand the fans  │
+│ back to the firmware curve)                              │
 └──────────────────────────────────────────────────────────┘
 ```
 
-Verified on a **Gigabyte G5 KC** (Insyde BIOS FB08, CachyOS / kernel 7.2)
-on 2026-09-06: red/green/blue/white, brightness steps and on/off all confirmed
-working; host-driven `breathe`/`cycle` effects confirmed on screen.
+Verified on a **Gigabyte G5 KC** (Insyde BIOS FB08, CachyOS / kernel 7.2):
+the keyboard was confirmed working on 2026-09-06 (red/green/blue/white,
+brightness steps, on/off, host-driven effects). The fan commands were decoded
+from this machine's own firmware on 2026-09-28, and the EC was then exercised
+for real: a duty write lands on the EC's read-back, the fans change speed,
+`0x69` releases them again, and the curve modes move the duty with the
+temperature. `sudo g5fan doctor --write` re-checks the write path in one
+command. See [docs/FAN-RESEARCH.md](docs/FAN-RESEARCH.md) §8 for what is still
+open.
 
-> These laptops ship no Linux software for the backlight. Windows controls it
-> with Clevo's Control Center (which is why, in Linux, the light stays stuck on
-> the firmware default: blue, full brightness — see
-> [docs/WINDOWS-RESEARCH.md](docs/WINDOWS-RESEARCH.md) for the full story of
-> what Windows actually uses and how the EC protocol was found).
+> These laptops ship no Linux software for the backlight or the fans. Windows
+> controls both with Clevo's Control Center (which is why, in Linux, the light
+> stays stuck on the firmware default: blue, full brightness, and the fans sit
+> on whatever curve the BIOS chose). The full story of what Windows actually
+> uses, and how each EC protocol was found, is in
+> [docs/WINDOWS-RESEARCH.md](docs/WINDOWS-RESEARCH.md) and
+> [docs/FAN-RESEARCH.md](docs/FAN-RESEARCH.md).
 
 ## Install
 
 ```bash
-sudo ./install.sh              # everything: kernel module, CLI, GUI
+sudo ./install.sh              # everything: kernel module, CLIs, GUI, watchdog
 sudo ./install.sh --no-gui     # CLI + kernel module only
+sudo ./install.sh --no-fan     # skip the fan tool and its watchdog
 sudo ./install.sh --uninstall  # remove all of it
 ```
 
@@ -42,9 +54,13 @@ What it installs:
 | `/sys/class/leds/rgb:kbd/{brightness,red,green,blue,color}` | the standard LED API (once the module is loaded) |
 | `/etc/udev/rules.d/99-g5kbd.rules` | let the `wheel` group write the LED — no root needed |
 | `/usr/bin/g5kbd` | CLI (falls back to the raw-EC path when the module isn't loaded) |
-| `/usr/bin/g5kbd-gui` | Tauri v2 GUI (skipped if `npm`/`cargo` are missing) |
+| `/usr/bin/g5fan` | fan CLI: modes, duty, curves, profiles, daemon, diagnostics |
+| `/usr/bin/g5kbd-gui` | native GPUI panel (skipped if `cargo` is missing) |
 | `/usr/lib/systemd/system/g5kbd.service` + `system-sleep/g5kbd` | restore the saved colour at boot and after suspend |
-| `/var/lib/g5kbd/state.json` | your saved state |
+| `/usr/lib/systemd/system/g5fan-watchdog.service` | fan daemon: drives the duty curves and hands the fans back to the firmware if the CPU gets too hot (skip with `--no-fan`) |
+| `/usr/share/polkit-1/actions/dev.g5kbd.fan.policy` | lets the GUI change the fans after an auth prompt |
+| `/var/lib/g5kbd/state.json` | your saved keyboard state |
+| `/var/lib/g5fan/state.json` | your saved fan state (written by root, readable by anyone) |
 
 The kernel module is built against **your running kernel's headers**, so you
 must re-run `sudo ./install.sh` after a kernel update (or use the DKMS flow:
@@ -59,17 +75,22 @@ g5kbd-gui
 A dark control panel with a live keyboard preview that glows in the current
 colour, colour presets + a native picker + RGB sliders + hex entry,
 brightness/power, saved colour profiles, and the breathe/cycle effects with
-speed. Built with **Tauri v2** (Rust core) and a **React + TypeScript +
-Tailwind + shadcn/ui** frontend; every change goes through the `g5kbd` CLI,
-so the GUI never touches the hardware itself and needs no privileges — the
-udev rule grants the LED node to the `wheel` group. The kernel node being
-present also means KDE/GNOME keyboard-brightness controls and tools like
-`brightnessctl` work for the brightness part.
+speed. The **Fans** page has the five fan modes, live per-fan duty and RPM
+gauges, CPU/GPU temperature gauges, a manual-duty slider and a five-point
+curve editor. Built with **[GPUI](https://gpui.rs)** (Zed's GPU-accelerated UI
+framework) and the `gpui-component` widget set: it ships as one Rust binary,
+with no web view and no Node toolchain. Every change goes through the
+`g5kbd`/`g5fan` CLIs, so the panel never touches the hardware itself. The
+keyboard needs no privileges (the udev rule grants the LED node to the `wheel`
+group), and neither does *looking* at the fans — the panel draws the reading
+the fan daemon last published, so polling it never raises a password dialog.
+Only fan **changes** authenticate, through polkit, because the EC is
+root-only.
 
-To hack on the UI alone (no driver needed): `cd gui && npm run dev` and open
-http://localhost:5173 — the panel falls back to an in-memory mock when it
-isn't running inside Tauri. Full app in dev mode with hot reload:
-`npm run tauri dev`.
+To hack on the panel alone (no driver needed): install the CLIs with
+`sudo ./install.sh --no-gui`, then `cd gui && cargo run` — the panel drives
+whatever `g5kbd`/`g5fan` are on `$PATH`. The first build compiles the GPUI tree
+and takes a few minutes; after that it is incremental.
 
 ## CLI
 
@@ -88,7 +109,6 @@ When the kernel module is loaded, `g5kbd` writes to `/sys/class/leds/rgb:kbd`
 the EC mailbox directly and auto-elevates via sudo.
 
 ## Effects
-
 ```bash
 g5kbd effect breathe --color ff0066     # pulsing glow in that colour
 g5kbd effect cycle --speed 8            # rainbow colour cycling (speed 1..10)
@@ -110,6 +130,102 @@ through whichever backend is active — the kernel LED node or the EC mailbox.
 - Any `g5kbd color/brightness/on/off` stops a running effect first.
 - Effects are not persisted — the keyboard is back to static colour after a
   reboot (the EC forgets everything anyway).
+
+## Fans
+
+```bash
+g5fan status                      # mode, per-fan duty, RPM, temperatures
+g5fan auto                        # hand both fans back to the firmware curve
+g5fan turbo                       # full speed
+g5fan manual 60                   # pin both fans at 60 % duty
+g5fan silent                      # quiet duty curve
+g5fan maxq                        # quietest duty curve
+g5fan custom                      # your own duty curve
+g5fan curve                       # show the curve and the presets
+g5fan curve set 50:25 65:40 75:60 85:80 95:100   # T:D points, °C and %
+g5fan supervise                   # the curve engine + thermal watchdog
+                                  # (this is what the systemd unit runs)
+g5fan probe                       # step through the modes; watch the fans
+g5fan doctor [--write]            # check every layer, incl. a duty round-trip
+g5fan profile save office         # named presets, like the keyboard's
+```
+
+Changing a fan needs root; *looking* at one does not. The daemon republishes
+what it can see to `/run/g5fan/status.json` every tick, so an unprivileged
+reader gets the same numbers with no password:
+
+```bash
+g5fan status --cached             # last reading the daemon published
+g5fan status --cached --json      # the same, machine-readable (the GUI's path)
+```
+
+That snapshot is only as old as the daemon's interval; if the daemon stops,
+the reading is refused rather than presented as live.
+
+`g5kbd fan <anything>` is a shortcut for `g5fan <anything>`, if you prefer one
+command.
+
+The five modes are the ones the Windows Control Center offers (from its own
+`oem.ini`: `0:Auto 1:Max 3:Silent 5:MAXQ 6:Custom`; "Max" is labelled *Turbo*
+in its UI). Unlike the keyboard, the fan commands are **documented in the
+firmware itself** — they were read straight out of this machine's DSDT, so
+nothing had to be guessed. Full write-up, including what is still inference,
+in [docs/FAN-RESEARCH.md](docs/FAN-RESEARCH.md).
+
+### Direct modes vs. curves
+
+`auto`, `turbo` and `manual N` are **direct**: the duty is written to the EC
+once and stays there. That is all the firmware itself offers.
+
+`silent`, `maxq` and `custom` are **curves**: `g5fan-watchdog.service` samples
+the temperature every few seconds and turns the curve into a duty for each fan
+(piecewise linear, 4 °C of hysteresis, and a floor that never lets a fan drop
+below 30 % once anything is at 85 °C or above).
+
+Curves live in userspace on purpose. The firmware *does* have a settable curve
+table, but:
+
+1. only **two of its four points** are writable from the OS — the other two
+   belong to the firmware;
+2. each fan also carries three RPM set-point words that the matching read
+   command never returns, so writing the table means clobbering values we
+   cannot see;
+3. nobody has been able to confirm that this EC honours the table at all.
+
+Driving the duty directly has none of those problems, is fully verifiable by
+ear, and gives a complete five-point curve instead of a two-point nudge. The
+trade-off is that the fans follow the curve only while the daemon runs; if you
+stop it they go back to the firmware curve, which is also the default.
+
+### Safety
+
+Fan control is the one feature here that can hurt you, so it is fenced in:
+
+- `auto` is the default and the resting state — the kernel driver hands the
+  fans back to the firmware curve when the module is unloaded, and
+  `install.sh --uninstall` does the same before removing anything.
+- Every write takes an `flock`, so two writers cannot interleave.
+- **Both duties are always named.** The firmware's `0x68` command assigns all
+  four fans on every call — it cannot be told about one fan, and a byte left
+  at zero stops that fan. So the driver's `fan_duty` attribute takes the pair
+  (`"cpu gpu"`) and nothing is read on the write path; setting the CPU fan
+  cannot stop the GPU fan. (Found the hard way: `g5fan doctor --write` is what
+  caught it, twice.)
+- Curves are validated with the same rules in the CLI, the GUI and the kernel:
+  temperatures must rise and duty must never fall as it gets hotter.
+- `g5fan-watchdog.service` enforces a thermal ceiling: above the CPU's **own**
+  high-temp limit from hwmon (90 °C if hwmon has none) the fans go back to the
+  firmware curve, which is the one thing here that cannot be misconfigured.
+- Fan writes need root, so the GUI authenticates through polkit
+  (`dev.g5kbd.fan.manage`, scoped to just `g5fan`).
+- The EC's firmware thermal protection runs regardless of any of this, which
+  is the real reason this is safe to experiment with.
+
+Stop the daemon with
+`sudo systemctl disable --now g5fan-watchdog.service`; whatever it was driving
+goes back to the firmware curve when it exits.
+
+## Effects
 
 ## How it works
 
@@ -145,11 +261,28 @@ Keyboard commands:
 | colour (zone 0) | `0x03` | **Blue** | **Red** | **Green** | `0xCA` |
 | brightness 0–255 | `0x06` | level | – | – | `0xCA` |
 
-Two gotchas that cost real debugging time (details in the research doc):
+Fan commands (fan 1 = CPU, fan 2 = GPU):
+
+| Action | FDAT | FBUF | doorbell |
+|---|---|---|---|
+| set duty 0–255 | fan number | level | `0xC1` |
+| back to auto | `0xFF` | fan number | `0xC1` |
+
+Note the argument order **flips** between the two. Duty is read back straight
+from EC RAM (`0xCE` = CPU, `0xCF` = GPU), and so is the fan speed — but the
+tacho registers (`0xD0/0xD1`, `0xD2/0xD3`) hold a **16-bit big-endian period**,
+not a speed: `rpm = 2156220 / period`. Temperatures sit at `0x07` (CPU) and
+`0x0A` (GPU).
+
+The firmware also has a fan *curve* table (function `0x0E`), which `g5fan`
+deliberately does not use — see [Fans](#fans) for why.
+
+Three gotchas that cost real debugging time (details in the research docs):
 
 1. the EC **silently ignores** every LED command until it has received the
    master enable (`0xC4 / 0x0C / 0x3F`);
-2. colour components go in **B, R, G** order — not R, G, B.
+2. colour components go in **B, R, G** order — not R, G, B;
+3. the fan duty and auto commands swap `FDAT`/`FBUF` relative to each other.
 
 Everything is forgotten on reboot and suspend, hence the systemd hooks.
 
@@ -171,13 +304,56 @@ Everything is forgotten on reboot and suspend, hence the systemd hooks.
 - **The light never changed in `g5kbd probe`** — stop: the EC protocol below is
   model-specific. The tool and driver refuse to run on non-Gigabyte G5/G6/G7
   hardware (`G5KBD_UNSAFE=1` / `force=1` override, at your own risk).
+- **Fan control does not seem to do anything** — run `sudo g5fan doctor`
+  first: it reports the machine, whether the kernel module and its attributes
+  are present, whether `ec_sys` is usable, and what the EC says about each
+  fan. Then `sudo g5fan doctor --write` writes a duty, reads it back and tells
+  you plainly whether the EC took it. Note the driver puts its attributes on
+  the ACPI device (`/sys/bus/acpi/devices/CLV0001:00/fan_{mode,duty}`); the
+  platform device of the same name carries none.
+- **`g5fan silent` / `maxq` / `custom` do nothing** — those are curves, and a
+  curve is driven by the daemon, not written to the hardware once. Check
+  `systemctl status g5fan-watchdog.service` and start it with
+  `sudo systemctl start g5fan-watchdog.service`.
+- **The GUI asks for a password when changing the fan mode** — that is
+  polkit, and it is expected: the EC is root-only. The keyboard controls never
+  ask. If the prompt does not appear, the policy did not install; check
+  `/usr/share/polkit-1/actions/dev.g5kbd.fan.policy`.
+- **`g5fan status` shows 0 RPM for the GPU fan** — a stopped fan reports a
+  tacho period of 0, and the GPU fan genuinely is stopped while the dGPU is
+  idle. A spinning fan always reports a period; if you doubt the number,
+  believe your ears.
 
 ## Safety
 
-The kernel driver only evaluates the firmware's own `_DSM` LED commands (the
-same ones Windows' AcpiBridge executes) — no hand-rolled EC writes. The CLI
-fallback writes only the keyboard-backlight mailbox. A reboot always returns
-the EC to firmware defaults, so no experiment can leave the machine stuck.
+The kernel driver only evaluates the firmware's own `_DSM` commands (the same
+ones Windows' AcpiBridge executes) — no hand-rolled EC writes. The CLI
+fallback writes only the keyboard-backlight and fan mailboxes. A reboot always
+returns the EC to firmware defaults, so no experiment can leave the machine
+stuck.
+
+The fans get extra care: `auto` is the resting state and what the driver
+restores on unload, every write is serialised with a `flock`, curves are
+rejected unless they rise with temperature, and the watchdog service restores
+the firmware curve on overheat. See [Fans → Safety](#fans) above and
+[docs/FAN-RESEARCH.md](docs/FAN-RESEARCH.md) §6.
+
+**Verified on hardware.** The fan commands were read straight off the
+firmware rather than guessed, and the EC was then driven for real: a duty
+write lands on the read-back, the fans change speed, `0x69` releases them
+again, and the curve modes move the duty as the temperature moves.
+`sudo g5fan doctor --write` re-checks the write path in one command, and
+`sudo ./probe-fan.sh` walks the modes by ear. What is still open is listed in
+[docs/FAN-RESEARCH.md](docs/FAN-RESEARCH.md) §8.
+
+## Roadmap
+
+Known gaps and the things worth doing next — the firmware questions nobody has
+answered yet, moving the fan telemetry into the kernel driver so `ec_sys` and
+root stop being needed for a *reading*, naming the fans after the hardware
+that is actually present, and the packaging/CI traps — are written down in
+[docs/ROADMAP.md](docs/ROADMAP.md), with priorities and a "done when" for
+each.
 
 ## Credits / prior art
 
@@ -193,14 +369,21 @@ the EC to firmware defaults, so no experiment can leave the machine stuck.
 
 ```
 src/g5kbd.py                the CLI (LED-node or EC backend, effects engine)
-gui/                        Tauri v2 GUI (web frontend + Rust core)
-kernel/g5kbd.c              ACPI driver: CLV0001 -> led-class-multicolor rgb:kbd
+src/g5fan.py                fan CLI: modes, curve, telemetry, profiles, watchdog
+gui/                        native GPUI panel (one Rust binary)
+gui/src/views/PerformanceView.tsx   the Fans page
+kernel/g5kbd.c              ACPI driver: CLV0001 -> rgb:kbd + fan control
 kernel/Makefile, dkms.conf  build + DKMS packaging
 kernel/99-g5kbd.rules       udev rule (wheel group owns the LED node)
-systemd/                    boot/suspend restore units + module config
+systemd/                    boot/suspend restore units, fan watchdog, modprobe
+polkit/                     lets the GUI authenticate for fan changes
 install.sh                  one-shot installer / uninstaller
 tools/ec.py                 raw EC probe utility (dump/read/write mailbox)
 probe-kb.sh                 guided hardware verification used during RE
-docs/WINDOWS-RESEARCH.md    full reverse-engineering write-up
+probe-fan.sh                the same, for the fan protocol
+docs/WINDOWS-RESEARCH.md    keyboard reverse-engineering write-up
+docs/FAN-RESEARCH.md        fan reverse-engineering write-up
+docs/ROADMAP.md             what is missing or unverified, with priorities
+win/, reference/            extracted Windows modules + prior art
 logs/, dsdt.dat             probe captures + ACPI DSDT from this machine
 ```

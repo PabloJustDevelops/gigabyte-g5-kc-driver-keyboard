@@ -10,48 +10,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  frontend:
-    name: Frontend (typecheck + build)
+  panel:
+    name: Panel (fmt + clippy + test)
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: gui
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: gui/package-lock.json
-      - run: npm ci
-      - run: npm run build
-
-  rust:
-    name: Rust core (fmt + clippy + test)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: gui/src-tauri
-    steps:
-      - uses: actions/checkout@v7
-      - name: Install Tauri system dependencies
+      - name: Install GPUI system dependencies
         run: |
           sudo apt-get update
+          # What gpui-pre-platform needs to build and link on Linux: the X11
+          # and Wayland client libraries (x11 + wayland features), their
+          # xkbcommon counterparts, fontconfig (zed-font-kit finds system
+          # fonts through it), and pkg-config to find them all. Vulkan is
+          # loaded at runtime, so only the loader/headers are needed here.
           sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            patchelf \
+            pkg-config \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libxcb1-dev \
+            libxcb-xkb-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libvulkan-dev \
             libssl-dev \
-            libxdo-dev \
             file
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: gui/src-tauri
+          workspaces: gui
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
@@ -92,14 +84,32 @@ jobs:
   python:
     name: Python CLI + shell scripts
     runs-on: ubuntu-latest
+    env:
+      # Keep the fan CLI's fake backend/state out of the real paths; there is
+      # no hardware and no /var/lib here.
+      G5FAN_FAKE: "1"
+      # The runner's DMI is not a Gigabyte G5, and g5fan refuses to touch an
+      # EC it has not reverse-engineered. That is on purpose; here there is no
+      # hardware at all, so the guard is what gets skipped.
+      G5FAN_UNSAFE: "1"
+      G5FAN_STATE: /tmp/g5fan-ci/state.json
+      G5FAN_LOCK: /tmp/g5fan-ci/ec.lock
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Byte-compile
-        run: python -m py_compile src/g5kbd.py tools/ec.py
-      - name: CLI smoke test (fake backend, no hardware)
-        run: G5KBD_FAKE=1 python src/g5kbd.py state
+        run: python -m py_compile src/g5kbd.py src/g5fan.py tools/ec.py
+      - name: Unit tests (curve maths, validation, rpm conversion)
+        run: python -m unittest discover -s tests -v
+      - name: CLI smoke tests (fake backend, no hardware)
+        run: |
+          G5KBD_FAKE=1 python src/g5kbd.py state
+          python src/g5fan.py status
+          python src/g5fan.py turbo
+          python src/g5fan.py curve set 50:25 65:40 75:60 85:80 95:100
+          python src/g5fan.py silent
+          python src/g5fan.py auto
       - name: Shell syntax check
-        run: bash -n install.sh probe-kb.sh probe-effects.sh systemd/system-sleep/g5kbd PKGBUILD
+        run: bash -n install.sh probe-kb.sh probe-effects.sh probe-fan.sh systemd/system-sleep/g5kbd PKGBUILD

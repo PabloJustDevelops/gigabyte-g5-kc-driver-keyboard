@@ -708,6 +708,27 @@ def cmd_state(args) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------
+# Fan shortcut — hands over to the g5fan tool
+# --------------------------------------------------------------------------
+def cmd_fan(args) -> int:
+    """`g5kbd fan ...` is a thin alias for `g5fan ...`.
+
+    Fan control is a separate binary on purpose: it needs root (the EC is not
+    group-writable, unlike the LED node) and it has its own thermal watchdog.
+    Run it directly to see everything it supports.
+    """
+    import shutil
+
+    g5fan = shutil.which("g5fan")
+    if not g5fan:
+        print("error: g5fan is not installed — re-run: sudo ./install.sh",
+              file=sys.stderr)
+        return 1
+    argv = [g5fan] + list(args.fan_args)
+    os.execv(g5fan, argv)   # hand over the process, exit code passes through
+
+
 def cmd_probe(args) -> int:
     """Quick self-test that cycles colours so you can watch the keyboard."""
     b = open_backend()
@@ -770,6 +791,18 @@ def main(argv) -> int:
                    help="run in the background (stop with 'g5kbd effect stop')")
     p.set_defaults(func=cmd_effect)
 
+    # Fan control lives in its own tool (g5fan) because it needs root and a
+    # different safety model; this is a convenience alias so the two halves of
+    # the control center can be driven from one command.
+    p = sub.add_parser("fan",
+                       help="fan control (delegates to g5fan); see "
+                            "`g5fan --help` for the full set")
+    p.add_argument("fan_args", nargs=argparse.REMAINDER,
+                   help="status | auto | turbo | silent | maxq | custom | "
+                        "manual N | curve | supervise | doctor | profile | "
+                        "probe")
+    p.set_defaults(func=cmd_fan)
+
     args = parser.parse_args(argv)
     if not getattr(args, "func", None):
         parser.print_help()
@@ -780,6 +813,7 @@ def main(argv) -> int:
     # world-writable through the udev rule, so root is only required by the
     # raw-EC fallback (module not loaded, or G5KBD_BACKEND=ec).
     readonly = (args.cmd == "state"
+                or args.cmd == "fan"      # g5fan does its own root handling
                 or (args.cmd == "profile"
                     and getattr(args, "profile_action", None) == "list"))
     led_writable = (os.environ.get("G5KBD_BACKEND") != "ec"

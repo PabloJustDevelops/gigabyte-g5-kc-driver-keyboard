@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+
+  <vendor>g5kbd</vendor>
+  <vendor_url>https://github.com/PabloJustDevelops</vendor_url>
+  <icon_name>g5kbd</icon_name>
+
+  <!--
+    Fan control has to run as root: the ACPI EC is only reachable through
+    ec_sys debugfs, which is root-owned. The keyboard LED node does not need
+    this (a udev rule hands it to the wheel group), but the fans do.
+
+    This mirrors that arrangement for the CLI, so the graphical panel can
+    change the fan mode after a normal authentication prompt instead of
+    asking for a terminal. Scope is deliberately narrow: only `g5fan`, only
+    for members of the wheel group (the same group the udev rule trusts), and
+    each call still shows up in the system log.
+  -->
+
+  <action id="dev.g5kbd.fan.manage">
+    <description>Change the Gigabyte G5 fan profile</description>
+    <message>Authentication is required to change the fan settings of this laptop</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/g5fan</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
+</policyconfig>
