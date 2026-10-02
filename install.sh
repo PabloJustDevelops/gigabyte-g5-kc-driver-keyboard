@@ -13,7 +13,7 @@
 #   /etc/udev/rules.d/99-g5kbd.rules              make the LED attrs world-writable
 #   /usr/bin/g5kbd                                CLI (EC fallback when the module is absent)
 #   /usr/bin/g5fan                                fan control CLI (unless --no-fan)
-#   /usr/bin/g5kbd-gui                            Tauri v2 GUI (unless --no-gui)
+#   /usr/bin/g5kbd-gui                            native GPUI panel (unless --no-gui)
 #   /usr/lib/systemd/system/g5kbd.service         boot-time restore
 #   /usr/lib/systemd/system-sleep/g5kbd           restore after suspend
 #   /usr/lib/systemd/system/g5fan-watchdog.service  fan daemon: duty curves + thermal ceiling (unless --no-fan)
@@ -179,34 +179,35 @@ if [ -d /sys/class/leds/rgb:kbd ]; then
              /sys/class/leds/rgb:kbd/multi_intensity 2>/dev/null || true
 fi
 
-# ---------- 4. GUI (Tauri v2: web frontend + Rust core) ----------
-# Needs node/npm for the frontend and cargo for the Rust core. First build
-# downloads the crates and takes a few minutes.
-if [ "$NO_GUI" = 0 ] && command -v npm >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
-  echo "==> Building the GUI (npm + cargo tauri, first build takes a while)"
-  if ( cd "$GUI_DIR" && npm install >/dev/null 2>&1 \
-        && npm run tauri -- build --no-bundle >/dev/null 2>&1 ) \
-     && [ -x "$GUI_DIR/src-tauri/target/release/g5kbd-gui" ]; then
-    install -m755 "$GUI_DIR/src-tauri/target/release/g5kbd-gui" /usr/bin/g5kbd-gui
+# ---------- 4. panel (GPUI: one Rust binary) ----------
+# No web frontend and no Node toolchain any more: gpui draws the window itself.
+# The first build downloads and compiles the GPUI tree, which takes a few
+# minutes; afterwards it is incremental.
+if [ "$NO_GUI" = 0 ] && command -v cargo >/dev/null 2>&1; then
+  echo "==> Building the panel (cargo, first build takes a while)"
+  if ( cd "$GUI_DIR" && cargo build --release >/dev/null 2>&1 ) \
+     && [ -x "$GUI_DIR/target/release/g5kbd-gui" ]; then
+    install -m755 "$GUI_DIR/target/release/g5kbd-gui" /usr/bin/g5kbd-gui
   else
-    echo "    warning: GUI build failed — skipping (CLI still installed)."
+    echo "    warning: panel build failed — skipping (CLI still installed)."
+    echo "    Run it by hand to see why:  cd gui && cargo build --release"
     rm -f /usr/bin/g5kbd-gui
   fi
 elif [ "$NO_GUI" = 0 ]; then
-  echo "==> npm/cargo not found — skipping the GUI. To build it later:"
-  echo "    cd gui && npm install && npm run tauri -- build --no-bundle"
-  echo "    sudo install -m755 src-tauri/target/release/g5kbd-gui /usr/bin/g5kbd-gui"
+  echo "==> cargo not found — skipping the panel. To build it later:"
+  echo "    cd gui && cargo build --release"
+  echo "    sudo install -m755 target/release/g5kbd-gui /usr/bin/g5kbd-gui"
 fi
 
 # ---------- 4b. desktop launcher -------------------------------------------
-# `tauri build --no-bundle` never generates a .desktop entry, so without this
-# the panel gets installed but stays invisible in the application menu.
+# A cargo build emits no .desktop entry, so without this the panel gets
+# installed but stays invisible in the application menu.
 if [ -x /usr/bin/g5kbd-gui ]; then
   echo "==> Installing the desktop launcher"
   install -Dm644 "$GUI_DIR/g5kbd-gui.desktop" /usr/share/applications/g5kbd-gui.desktop
   for s in 32x32 128x128; do
-    [ -f "$GUI_DIR/src-tauri/icons/$s.png" ] && \
-      install -Dm644 "$GUI_DIR/src-tauri/icons/$s.png" "/usr/share/icons/hicolor/$s/apps/g5kbd.png"
+    [ -f "$GUI_DIR/icons/$s.png" ] && \
+      install -Dm644 "$GUI_DIR/icons/$s.png" "/usr/share/icons/hicolor/$s/apps/g5kbd.png"
   done
   command -v update-desktop-database >/dev/null 2>&1 && \
     update-desktop-database /usr/share/applications 2>/dev/null || true

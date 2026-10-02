@@ -5,7 +5,7 @@ Colour / brightness / effects for the single-zone RGB keyboard of the
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│ GUI  g5kbd-gui  (Tauri v2: web UI + Rust core, no root)  │
+│ Panel g5kbd-gui  (native GPUI: one Rust binary, no root)│
 ├──────────────────────────────────────────────────────────┤
 │ CLI  g5kbd  (Python — keyboard; no GUI needed)           │
 │ CLI  g5fan  (Python — fans, profiles, thermal watchdog)  │
@@ -55,7 +55,7 @@ What it installs:
 | `/etc/udev/rules.d/99-g5kbd.rules` | let the `wheel` group write the LED — no root needed |
 | `/usr/bin/g5kbd` | CLI (falls back to the raw-EC path when the module isn't loaded) |
 | `/usr/bin/g5fan` | fan CLI: modes, duty, curves, profiles, daemon, diagnostics |
-| `/usr/bin/g5kbd-gui` | Tauri v2 GUI (skipped if `npm`/`cargo` are missing) |
+| `/usr/bin/g5kbd-gui` | native GPUI panel (skipped if `cargo` is missing) |
 | `/usr/lib/systemd/system/g5kbd.service` + `system-sleep/g5kbd` | restore the saved colour at boot and after suspend |
 | `/usr/lib/systemd/system/g5fan-watchdog.service` | fan daemon: drives the duty curves and hands the fans back to the firmware if the CPU gets too hot (skip with `--no-fan`) |
 | `/usr/share/polkit-1/actions/dev.g5kbd.fan.policy` | lets the GUI change the fans after an auth prompt |
@@ -77,18 +77,20 @@ colour, colour presets + a native picker + RGB sliders + hex entry,
 brightness/power, saved colour profiles, and the breathe/cycle effects with
 speed. The **Fans** page has the five fan modes, live per-fan duty and RPM
 gauges, CPU/GPU temperature gauges, a manual-duty slider and a five-point
-curve editor. Built with **Tauri v2** (Rust core) and a **React + TypeScript +
-Tailwind + shadcn/ui** frontend; every change goes through the `g5kbd`/`g5fan`
-CLIs, so the GUI never touches the hardware itself. The keyboard needs no
-privileges (the udev rule grants the LED node to the `wheel` group), and
-neither does *looking* at the fans — the panel draws the reading the fan
-daemon last published, so polling it never raises a password dialog. Only fan
-**changes** authenticate, through polkit, because the EC is root-only.
+curve editor. Built with **[GPUI](https://gpui.rs)** (Zed's GPU-accelerated UI
+framework) and the `gpui-component` widget set: it ships as one Rust binary,
+with no web view and no Node toolchain. Every change goes through the
+`g5kbd`/`g5fan` CLIs, so the panel never touches the hardware itself. The
+keyboard needs no privileges (the udev rule grants the LED node to the `wheel`
+group), and neither does *looking* at the fans — the panel draws the reading
+the fan daemon last published, so polling it never raises a password dialog.
+Only fan **changes** authenticate, through polkit, because the EC is
+root-only.
 
-To hack on the UI alone (no driver needed): `cd gui && npm run dev` and open
-http://localhost:5173 — the panel falls back to an in-memory mock when it
-isn't running inside Tauri. Full app in dev mode with hot reload:
-`npm run tauri dev`.
+To hack on the panel alone (no driver needed): install the CLIs with
+`sudo ./install.sh --no-gui`, then `cd gui && cargo run` — the panel drives
+whatever `g5kbd`/`g5fan` are on `$PATH`. The first build compiles the GPUI tree
+and takes a few minutes; after that it is incremental.
 
 ## CLI
 
@@ -368,7 +370,7 @@ each.
 ```
 src/g5kbd.py                the CLI (LED-node or EC backend, effects engine)
 src/g5fan.py                fan CLI: modes, curve, telemetry, profiles, watchdog
-gui/                        Tauri v2 GUI (web frontend + Rust core)
+gui/                        native GPUI panel (one Rust binary)
 gui/src/views/PerformanceView.tsx   the Fans page
 kernel/g5kbd.c              ACPI driver: CLV0001 -> rgb:kbd + fan control
 kernel/Makefile, dkms.conf  build + DKMS packaging

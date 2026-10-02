@@ -47,7 +47,7 @@ The EC is root-only, so `status` reads it directly only when it has to. The
 daemon republishes what it sees to /run/g5fan/status.json on every tick, and
 `status --cached` reports that instead — no root, no password. `status --json`
 is the same reading in a machine-readable form, and that is what the desktop
-panel consumes (gui/src-tauri/src/lib.rs). Everything that *changes* a fan
+panel consumes (gui/src/backend/fan.rs). Everything that *changes* a fan
 still goes through sudo/pkexec.
 
 SAFETY. The fans are the only thing keeping this CPU alive, so:

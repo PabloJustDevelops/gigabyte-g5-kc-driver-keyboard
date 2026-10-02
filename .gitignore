@@ -15,11 +15,15 @@ pkg/
 *.pkg.tar.*
 *.src.tar.*
 
-# gui (tauri)
+# panel (gpui / cargo)
+gui/target/
+
+# leftovers from the removed web build. `sudo ./install.sh` used to run
+# npm install as root, so these trees are root-owned and cannot be deleted by
+# a normal user; they are ignored so they can never be committed. Remove them
+# with:  sudo rm -rf gui/node_modules gui/dist
 gui/node_modules/
 gui/dist/
-gui/src-tauri/target/
-gui/src-tauri/gen/
 
 # kernel module build artifacts
 kernel/*.o
