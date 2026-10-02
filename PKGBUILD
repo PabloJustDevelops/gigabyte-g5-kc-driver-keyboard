@@ -7,11 +7,12 @@ pkgdesc="Keyboard backlight and fan control for Gigabyte G5 (Clevo-ODM) laptops 
 arch=('x86_64')
 url=""
 license=('MIT' 'GPL2')
-# The panel draws itself with GPUI: it needs the Vulkan loader (wgpu), and the
-# X11/Wayland client libraries it links against. The Wayland backend is loaded
-# at runtime, so libwayland-client is a hard dependency rather than optional.
-depends=('python' 'vulkan-icd-loader' 'libxkbcommon' 'libxkbcommon-x11' 'libxcb' 'wayland')
-makedepends=('linux-headers' 'rust' 'cargo' 'make' 'gcc' 'clang' 'lld' 'pkgconf' 'wayland' 'libxkbcommon' 'libxcb' 'vulkan-headers')
+# The panel draws itself with GPUI: it needs the Vulkan loader (wgpu), the
+# X11/Wayland client libraries it links against, and fontconfig (zed-font-kit
+# finds the system fonts through it). The Wayland backend is loaded at
+# runtime, so libwayland-client is a hard dependency rather than optional.
+depends=('python' 'vulkan-icd-loader' 'libxkbcommon' 'libxkbcommon-x11' 'libxcb' 'wayland' 'fontconfig')
+makedepends=('linux-headers' 'rust' 'cargo' 'make' 'gcc' 'clang' 'lld' 'pkgconf' 'wayland' 'libxkbcommon' 'libxcb' 'fontconfig' 'freetype2' 'vulkan-headers')
 source=("src/g5kbd.py"
         "src/g5fan.py"
         "systemd/g5kbd.service"

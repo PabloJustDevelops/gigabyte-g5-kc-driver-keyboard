@@ -23,7 +23,8 @@ jobs:
           sudo apt-get update
           # What gpui-pre-platform needs to build and link on Linux: the X11
           # and Wayland client libraries (x11 + wayland features), their
-          # xkbcommon counterparts, and pkg-config to find them. Vulkan is
+          # xkbcommon counterparts, fontconfig (zed-font-kit finds system
+          # fonts through it), and pkg-config to find them all. Vulkan is
           # loaded at runtime, so only the loader/headers are needed here.
           sudo apt-get install -y \
             pkg-config \
@@ -32,6 +33,8 @@ jobs:
             libxkbcommon-x11-dev \
             libxcb1-dev \
             libxcb-xkb-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
             libvulkan-dev \
             libssl-dev \
             file
