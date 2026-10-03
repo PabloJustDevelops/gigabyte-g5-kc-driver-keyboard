@@ -66,8 +66,14 @@ fn headless() -> HeadlessAppContext {
     cx
 }
 
-/// Open the panel at its real window size, pinned to `view`.
-fn open_panel(view: View) -> (HeadlessAppContext, AnyWindowHandle, Entity<Panel>) {
+/// The window the app opens at, and the one the default snapshots use.
+const DEFAULT_SIZE: (f32, f32) = (1040., 680.);
+
+/// Open the panel at `size`, pinned to `view`.
+fn open_panel(
+    view: View,
+    size_px: (f32, f32),
+) -> (HeadlessAppContext, AnyWindowHandle, Entity<Panel>) {
     let mut cx = headless();
     let (handle, panel) = cx
         .update(|cx: &mut App| {
@@ -75,7 +81,7 @@ fn open_panel(view: View) -> (HeadlessAppContext, AnyWindowHandle, Entity<Panel>
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(Bounds {
                         origin: Default::default(),
-                        size: size(px(1040.), px(680.)),
+                        size: size(px(size_px.0), px(size_px.1)),
                     })),
                     focus: false,
                     show: false,
@@ -87,6 +93,11 @@ fn open_panel(view: View) -> (HeadlessAppContext, AnyWindowHandle, Entity<Panel>
         })
         .expect("open headless window");
     (cx, handle, panel)
+}
+
+/// The panel at its shipped window size.
+fn open_panel_default(view: View) -> (HeadlessAppContext, AnyWindowHandle, Entity<Panel>) {
+    open_panel(view, DEFAULT_SIZE)
 }
 
 fn render(cx: &mut HeadlessAppContext, handle: AnyWindowHandle) {
@@ -116,7 +127,7 @@ fn renders_every_view() {
         (View::Profiles, "profiles"),
         (View::Fans, "fans"),
     ] {
-        let (mut cx, handle, _) = open_panel(view);
+        let (mut cx, handle, _) = open_panel_default(view);
         settle(&mut cx, handle);
 
         // CI runners have no GPU, so `WgpuHeadlessRenderer::new()` may not come
@@ -131,6 +142,53 @@ fn renders_every_view() {
     }
 }
 
+/// The same views at the three window widths `layout::Breakpoint` knows about.
+///
+/// The panel used to lay out as if the window were always 1040 px wide, so a
+/// window opened on half a screen clipped its own controls and one opened full
+/// width left a dead gutter down the right-hand side. These pictures are how
+/// that gets noticed; the assertions below are the part that fails a build.
+#[test]
+fn lays_out_at_every_window_width() {
+    for (label, width) in [("compact", 720.), ("wide", 1600.)] {
+        for (view, name) in [(View::Home, "home"), (View::Fans, "fans")] {
+            let (mut cx, handle, _) = open_panel(view, (width, 720.));
+            settle(&mut cx, handle);
+
+            let Ok(image) = cx.capture_screenshot(handle) else {
+                println!("layout: skipped {label}/{name} (no headless renderer)");
+                continue;
+            };
+            let path = output_dir().join(format!("{label}-{name}.png"));
+            image.save(&path).expect("write snapshot");
+            println!("layout: {}", path.display());
+        }
+    }
+}
+
+/// A narrow window has to collapse the sidebar rather than let it eat the
+/// content. Checked as pixels: the rail is 64 px, so if the labels are still
+/// being drawn the far-left column of the frame is not the rail's flat
+/// background colour.
+#[test]
+fn a_narrow_window_collapses_the_sidebar() {
+    let (mut cx, handle, _) = open_panel(View::Home, (720., 720.));
+    settle(&mut cx, handle);
+    let Ok(narrow) = cx.capture_screenshot(handle) else {
+        println!("narrow: skipped (no headless renderer available)");
+        return;
+    };
+    let (mut cx, handle, _) = open_panel_default(View::Home);
+    settle(&mut cx, handle);
+    let Ok(default) = cx.capture_screenshot(handle) else {
+        return;
+    };
+    assert_ne!(
+        narrow, default,
+        "a 720 px window must not render exactly like the 1040 px one"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Keyboard
 // ---------------------------------------------------------------------------
@@ -140,7 +198,7 @@ fn renders_every_view() {
 /// change view at all. This is the regression guard for that.
 #[test]
 fn sidebar_is_operable_from_the_keyboard() {
-    let (mut cx, handle, panel) = open_panel(View::Home);
+    let (mut cx, handle, panel) = open_panel_default(View::Home);
     render(&mut cx, handle);
 
     cx.update_window(handle, |_, window, cx| {
@@ -156,7 +214,7 @@ fn sidebar_is_operable_from_the_keyboard() {
 /// Space must work as well as Enter, the way a native button does.
 #[test]
 fn sidebar_rows_activate_on_space() {
-    let (mut cx, handle, panel) = open_panel(View::Home);
+    let (mut cx, handle, panel) = open_panel_default(View::Home);
     render(&mut cx, handle);
 
     cx.update_window(handle, |_, window, cx| {
@@ -173,7 +231,7 @@ fn sidebar_rows_activate_on_space() {
 /// above focus by hand are unreachable in real use.
 #[test]
 fn tab_moves_focus_into_the_panel() {
-    let (mut cx, handle, _) = open_panel(View::Home);
+    let (mut cx, handle, _) = open_panel_default(View::Home);
     render(&mut cx, handle);
 
     let before = cx
@@ -195,7 +253,7 @@ fn tab_moves_focus_into_the_panel() {
 /// Shift+Tab walks back out again.
 #[test]
 fn shift_tab_moves_focus_back() {
-    let (mut cx, handle, _) = open_panel(View::Home);
+    let (mut cx, handle, _) = open_panel_default(View::Home);
     render(&mut cx, handle);
 
     cx.update_window(handle, |_, window, cx| {
@@ -225,7 +283,7 @@ fn shift_tab_moves_focus_back() {
 /// not. The fade is keyed on `view_seq`, so a stray bump would replay it.
 #[test]
 fn switching_views_arms_the_fade() {
-    let (mut cx, handle, panel) = open_panel(View::Home);
+    let (mut cx, handle, panel) = open_panel_default(View::Home);
     settle(&mut cx, handle);
 
     let start = cx.update(|app| panel.read(app).view_seq);
@@ -256,7 +314,7 @@ fn switching_views_arms_the_fade() {
 /// between a transition and a no-op, checked as pixels.
 #[test]
 fn the_view_fades_in_rather_than_snapping() {
-    let (mut cx, handle, panel) = open_panel(View::Home);
+    let (mut cx, handle, panel) = open_panel_default(View::Home);
     settle(&mut cx, handle);
     let Ok(before) = cx.capture_screenshot(handle) else {
         println!("fade: skipped (no headless renderer available)");
@@ -301,7 +359,7 @@ fn the_view_fades_in_rather_than_snapping() {
 /// pixel, because the fade was already at its end state on the first frame.
 #[test]
 fn reduced_motion_leaves_the_fade_settled() {
-    let (mut cx, handle, panel) = open_panel(View::Home);
+    let (mut cx, handle, panel) = open_panel_default(View::Home);
     cx.update(|app| app.set_reduce_motion(true));
     settle(&mut cx, handle);
 

@@ -4,8 +4,8 @@
 // widgets (Button, Slider, Switch, Input, Toggle) cover the rest.
 
 use gpui_kit::{
-    AnyElement, App, BoxShadow, Hsla, IntoElement, ParentElement, RenderOnce, SharedString, Styled,
-    Window, div, px, relative,
+    AnyElement, App, BoxShadow, Hsla, IntoElement, ParentElement, Pixels, RenderOnce, SharedString,
+    Styled, Window, div, px, relative,
 };
 
 use crate::motion;
@@ -119,7 +119,7 @@ pub fn temp_color(temp_c: i32) -> Hsla {
 
 /// `channel` and `index` together identify this gauge's bar. They have to be
 /// unique across a whole render pass — the spring state is filed under that id
-/// — so the two views number their gauges from different ranges.
+/// — so the caller numbers its gauges from disjoint ranges.
 #[allow(clippy::too_many_arguments)]
 pub fn labeled_gauge(
     channel: &'static str,
@@ -129,6 +129,7 @@ pub fn labeled_gauge(
     sub: String,
     frac: f32,
     color: Hsla,
+    min_w: Pixels,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -136,7 +137,10 @@ pub fn labeled_gauge(
         .flex()
         .flex_col()
         .gap_1()
-        .min_w(px(148.))
+        // How narrow a gauge may get before the grid wraps. Fixed at 148 px this
+        // pushed the sub-label off the end of a gauge on a half-screen window;
+        // the layout decides instead.
+        .min_w(min_w)
         .flex_1()
         .child(
             div()

@@ -413,9 +413,48 @@ kit's `Slider` owns its thumb and already springs the ring with
 `spring_control`; adding a second spring inside a dependency is not something
 this repo should carry. The gauges, which are ours, got the spring instead.
 
+### Phase 7 — layout that uses the window
+
+The panel was laid out as if the window were always 1040 px wide: a 220 px
+sidebar and a content column capped at 940 px. Opened on half a screen the
+controls clipped; opened full width it left a dead gutter down the right-hand
+side and a shorter one below. That empty space, not the palette, is what made
+the panel read as flat.
+
+`gui/src/layout.rs` classifies the window width once per frame into three
+breakpoints, and every view reads it:
+
+| Width | Sidebar | Lanes | Content |
+| --- | --- | --- | --- |
+| `< 800 px` | 64 px icon rail, labels and version dropped | 1 | fills the pane |
+| `800–1180 px` | 220 px with labels | 1 | fills the pane |
+| `≥ 1180 px` | 220 px with labels | 2, in a 2:1 ratio | capped at 1340 px, centred |
+
+Done when:
+
+- `cargo test --test snapshot lays_out_at_every_window_width` writes
+  `compact-home.png`, `compact-fans.png`, `wide-home.png` and `wide-fans.png`
+  next to the four default ones, and all six look like the same product.
+- `a_narrow_window_collapses_the_sidebar` fails if a 720 px window renders
+  identically to the 1040 px one.
+- The window opens resizable with a 720×600 minimum, which is the narrowest
+  width the compact layout claims to support.
+
+Why the window width and not `gpui::container_query`: the query callback runs
+during prepaint and its child is laid out against a size the container already
+has, so it can choose a layout but cannot widen its own column. The one thing
+that has to give here — how wide the content is — is exactly the thing a
+container query cannot decide.
+
 ### Still open
 
-The contrast pass on the 8 px keycap legends and the 9–10.5 px uppercase
-labels is still not done: it needs measurement against the rendered PNGs
-rather than an opinion, and it is the one item in Phase 6 that cannot be
-settled from the code alone.
+- The contrast pass on the 8 px keycap legends and the 9–10.5 px uppercase
+  labels: it needs measurement against the rendered PNGs rather than an
+  opinion.
+- Surface and hierarchy: the four views are still four identical bordered
+  cards, with no elevation and no typographic scale.
+- The gauges are still bars; ring, thermometer and rpm sparkline are not
+  drawn.
+- The fan curve is still ten sliders rather than a graph.
+- The daemon status is still a word in the sidebar footer rather than a status
+  bar.

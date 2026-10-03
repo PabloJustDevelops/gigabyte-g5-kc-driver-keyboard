@@ -26,6 +26,7 @@ source=("src/g5kbd.py"
         "kernel/99-g5kbd.rules"
         "gui/Cargo.toml"
         "gui/Cargo.lock"
+        "gui/src/layout.rs"
         "gui/src/lib.rs"
         "gui/src/main.rs"
         "gui/src/motion.rs"
@@ -56,7 +57,7 @@ sha256sums=(
             'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
             'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
             'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
-            'SKIP' 'SKIP' 'SKIP')
+            'SKIP' 'SKIP' 'SKIP' 'SKIP')
 
 build() {
   # --- kernel module against the running kernel's headers ---

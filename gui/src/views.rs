@@ -1,13 +1,23 @@
 // The four views. Each renders from `Panel` state; actions call back into
 // Panel methods, which own the async plumbing.
+//
+// Every view takes a `Breakpoint` and lays itself out in two lanes when the
+// window is wide, one when it is not. That is the whole of the responsive
+// story: the views know how to stack themselves, and `layout` knows when.
 
 use gpui_kit::{
     Context as GpuiContext, IntoElement, ParentElement, SharedString, Styled, Window,
-    component::button::Button, component::input::InputState, component::slider::Slider, div,
-    prelude::*, px,
+    component::button::Button,
+    component::input::InputState,
+    component::slider::Slider,
+    component::{Icon, IconName},
+    div,
+    prelude::*,
+    px,
 };
 
 use crate::backend::{self, fan::FanMode};
+use crate::layout::Breakpoint;
 use crate::motion;
 use crate::panel::{Panel, View};
 use crate::theme;
@@ -18,8 +28,67 @@ use gpui_kit::component::scroll::ScrollableElement as _;
 // Shared pieces
 // ---------------------------------------------------------------------------
 
+/// The glyph each sidebar row collapses to. All four are in the kit's default
+/// icon bundle, so they resolve without adding an asset source; the full
+/// Lucide catalogue exists in the crate but only the default subset is
+/// embedded for offline use.
+fn nav_icon(index: usize) -> IconName {
+    match index {
+        0 => IconName::LayoutDashboard,
+        1 => IconName::Palette,
+        2 => IconName::Folder,
+        _ => IconName::Cpu,
+    }
+}
+
+/// Lay `primary` and `secondary` out side by side when there is room, stacked
+/// when there is not.
+///
+/// The two lanes get 2:1 rather than 1:1 because the left one always carries
+/// the thing with more to show (the keyboard, the mode chips, the save form).
+///
+/// `flex_basis(0)` is what makes the ratio mean anything — without it a lane
+/// keeps its intrinsic width and only the leftover space is shared. `min_w(0)`
+/// is just as load-bearing: a flex item's automatic minimum size is its
+/// min-content width, so the curve editor's five slider columns would floor the
+/// right lane at ~1000 px and starve the left one down to whatever was left,
+/// which is how the first attempt at this rendered 1:4 instead of 2:1.
+fn lanes(
+    layout: Breakpoint,
+    primary: Vec<gpui_kit::AnyElement>,
+    secondary: Vec<gpui_kit::AnyElement>,
+) -> gpui_kit::AnyElement {
+    let column = |grow: f32, children: Vec<gpui_kit::AnyElement>| {
+        div()
+            .flex()
+            .flex_col()
+            .gap(layout.gap())
+            .flex_grow(grow)
+            .flex_basis(px(0.))
+            .min_w(px(0.))
+            .min_h(px(0.))
+            .children(children)
+    };
+    if layout.lanes() == 1 {
+        return column(1., primary)
+            .child(column(1., secondary))
+            .w_full()
+            .into_any_element();
+    }
+    div()
+        .w_full()
+        .flex()
+        .flex_row()
+        .items_start()
+        .gap(layout.gap())
+        .child(column(2., primary))
+        .child(column(1., secondary))
+        .into_any_element()
+}
+
 fn sidebar(
     panel: &mut Panel,
+    layout: Breakpoint,
     window: &mut Window,
     cx: &mut GpuiContext<Panel>,
 ) -> gpui_kit::AnyElement {
@@ -30,37 +99,54 @@ fn sidebar(
         ("Profiles", "saved sets", active == View::Profiles),
         ("Fans", "modes · curves", active == View::Fans),
     ];
+    let labelled = layout.sidebar_labels();
 
     div()
-        .w(px(220.))
+        .w(layout.sidebar_w())
         .h_full()
         .flex()
         .flex_col()
         .border_r_1()
         .border_color(theme::LINE)
         .bg(theme::FIELD)
-        .p_3()
+        .py_3()
         .gap_0p5()
+        // Collapsed, the rows are icon-only and the gutter between them and the
+        // window edge has to shrink with them, or the icons float in the middle
+        // of a wide empty band.
+        .when(labelled, |el| el.px_3())
+        .when(!labelled, |el| el.px_2())
         .child(
             div()
-                .px_2()
-                .pb_3()
                 .flex()
                 .flex_col()
                 .gap_0p5()
+                .when(labelled, |el| el.px_2().pb_3())
                 .child(
                     div()
                         .text_sm()
                         .font_weight(gpui_kit::FontWeight::BOLD)
                         .text_color(theme::TEXT)
-                        .child("g5kbd"),
+                        // The wordmark is the first thing to go: at 64 px it
+                        // would be clipped, and the icon column reads as a rail
+                        // without it.
+                        .when(labelled, |el| el.child("g5kbd"))
+                        .when(!labelled, |el| {
+                            el.child(
+                                Icon::new(IconName::Settings)
+                                    .size(px(20.))
+                                    .text_color(theme::hsla(theme::ACCENT, 1.)),
+                            )
+                        }),
                 )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::FAINT)
-                        .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
-                ),
+                .when(labelled, |el| {
+                    el.child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::FAINT)
+                            .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
+                    )
+                }),
         )
         .children(
             labels
@@ -97,6 +183,15 @@ fn sidebar(
                         .cursor_pointer()
                         .flex()
                         .flex_col()
+                        .when(labelled, |el| el.items_start())
+                        // Collapsed, the row is a square button: without a fixed
+                        // height and centred content the icon sits off-axis in a
+                        // strip only two icons wide.
+                        .when(!labelled, |el| {
+                            el.h(layout.sidebar_w() - px(28.))
+                                .justify_center()
+                                .items_center()
+                        })
                         .bg(motion::blend(resting, hovered, warmth))
                         // The web panel marked the active row with an accent-tinted
                         // fill, a hairline border and an accent rule on the left. The
@@ -130,23 +225,69 @@ fn sidebar(
                         }))
                         .child(
                             div()
-                                .text_sm()
-                                .text_color(if *is_active {
-                                    theme::ACCENT
-                                } else {
-                                    theme::TEXT
-                                })
-                                .child(*label),
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(Icon::new(nav_icon(i)).size(px(16.)).text_color(
+                                    theme::hsla(
+                                        if *is_active {
+                                            theme::ACCENT
+                                        } else {
+                                            theme::MUTED
+                                        },
+                                        1.,
+                                    ),
+                                ))
+                                // In the collapsed rail the icon has to stay
+                                // centred, so the label is dropped rather than
+                                // the row re-aligned.
+                                .when(labelled, |el| {
+                                    el.child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(if *is_active {
+                                                theme::ACCENT
+                                            } else {
+                                                theme::TEXT
+                                            })
+                                            .child(*label),
+                                    )
+                                }),
                         )
-                        .child(div().text_xs().text_color(theme::FAINT).child(*sub))
+                        .when(labelled, |el| {
+                            el.child(div().text_xs().text_color(theme::FAINT).child(*sub))
+                        })
                         .into_any_element()
                 }),
         )
         // the watchdog chip lives in the sidebar footer, like the web panel
         .child(div().flex_1())
         .children(match (panel.watchdog, panel.fan_error.is_some()) {
-            (Some(true), _) => Some(div().text_xs().text_color(theme::OK).child("daemon on")),
-            (Some(false), _) => Some(div().text_xs().text_color(theme::WARN).child("daemon off")),
+            (Some(true), _) => Some(
+                div()
+                    .text_xs()
+                    .text_color(theme::OK)
+                    .when(labelled, |el| el.px_2().child("daemon on"))
+                    // Collapsed there is no room for the word, so the status
+                    // becomes the breathing dot the sidebar already uses
+                    // elsewhere. It is the same signal in less space.
+                    .when(!labelled, |el| {
+                        el.flex()
+                            .justify_center()
+                            .child(div().size(px(7.)).rounded_full().bg(theme::OK))
+                    }),
+            ),
+            (Some(false), _) => Some(
+                div()
+                    .text_xs()
+                    .text_color(theme::WARN)
+                    .when(labelled, |el| el.px_2().child("daemon off"))
+                    .when(!labelled, |el| {
+                        el.flex()
+                            .justify_center()
+                            .child(div().size(px(7.)).rounded_full().bg(theme::WARN))
+                    }),
+            ),
             _ => None,
         })
         .into_any_element()
@@ -282,6 +423,7 @@ fn mode_chip(
 
 fn lighting(
     panel: &mut Panel,
+    layout: Breakpoint,
     window: &mut Window,
     cx: &mut GpuiContext<Panel>,
 ) -> gpui_kit::AnyElement {
@@ -292,16 +434,11 @@ fn lighting(
     // animation instead and sits still, which is the point of it.
     let live = motion::breath("effect-live", window, cx);
 
-    div()
-        .flex()
-        .flex_col()
-        .gap_4()
-        .child(widgets::keyboard_preview(
-            panel.accent(),
-            panel.glow(),
-            panel.kbd.enabled,
-        ))
-        .child(
+    lanes(
+        layout,
+        vec![
+            widgets::keyboard_preview(panel.accent(), panel.glow(), panel.kbd.enabled)
+                .into_any_element(),
             Section::new("Colour", SharedString::from(format!("#{hex_now}")))
                 .child(
                     div()
@@ -314,6 +451,7 @@ fn lighting(
                 .child(
                     div()
                         .flex()
+                        .flex_wrap()
                         .gap_2()
                         .items_center()
                         .child(input_compact(&panel.hex_input))
@@ -349,33 +487,33 @@ fn lighting(
                                     .into_any_element()
                             }),
                         ),
-                ),
-        )
-        .child(
+                )
+                .into_any_element(),
+        ],
+        vec![
             Section::new(
                 "Brightness",
                 SharedString::from(format!("{}%", panel.kbd.brightness)),
             )
-            .child(slider_full(&panel.brightness, cx)),
-        )
-        .child(
-            Section::new("Power", if panel.kbd.enabled { "on" } else { "off" }).child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(Button::new("power-on").label("On").on_click(cx.listener(
-                        |panel, _e, _w, cx| {
-                            panel.kbd_action(vec!["on".into()], cx);
-                        },
-                    )))
-                    .child(Button::new("power-off").label("Off").on_click(cx.listener(
-                        |panel, _e, _w, cx| {
-                            panel.kbd_action(vec!["off".into()], cx);
-                        },
-                    ))),
-            ),
-        )
-        .child(
+            .child(slider_full(&panel.brightness, cx))
+            .into_any_element(),
+            Section::new("Power", if panel.kbd.enabled { "on" } else { "off" })
+                .child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(Button::new("power-on").label("On").on_click(cx.listener(
+                            |panel, _e, _w, cx| {
+                                panel.kbd_action(vec!["on".into()], cx);
+                            },
+                        )))
+                        .child(Button::new("power-off").label("Off").on_click(cx.listener(
+                            |panel, _e, _w, cx| {
+                                panel.kbd_action(vec!["off".into()], cx);
+                            },
+                        ))),
+                )
+                .into_any_element(),
             Section::new("Effects", panel.effect_mode.unwrap_or("static"))
                 .when(panel.effect_mode.is_some(), |el| {
                     el.child(
@@ -401,6 +539,7 @@ fn lighting(
                 .child(
                     div()
                         .flex()
+                        .flex_wrap()
                         .gap_2()
                         .items_center()
                         .child(
@@ -443,19 +582,24 @@ fn lighting(
                                 panel.kbd_action(vec!["effect".into(), "stop".into()], cx);
                             },
                         )))
-                        .child(div().w_6())
+                        .child(div().w_2())
                         .child(div().text_xs().text_color(theme::FAINT).child("speed"))
                         .child(slider_inline(&panel.speed, cx)),
-                ),
-        )
-        .into_any_element()
+                )
+                .into_any_element(),
+        ],
+    )
 }
 
 // ---------------------------------------------------------------------------
 // Profiles
 // ---------------------------------------------------------------------------
 
-fn profiles(panel: &mut Panel, cx: &mut GpuiContext<Panel>) -> gpui_kit::AnyElement {
+fn profiles(
+    panel: &mut Panel,
+    layout: Breakpoint,
+    cx: &mut GpuiContext<Panel>,
+) -> gpui_kit::AnyElement {
     let rows: Vec<String> = panel.profiles.clone();
     let rows: Vec<(String, String)> = rows
         .iter()
@@ -465,35 +609,40 @@ fn profiles(panel: &mut Panel, cx: &mut GpuiContext<Panel>) -> gpui_kit::AnyElem
         })
         .collect();
 
-    div()
-        .flex()
-        .flex_col()
-        .gap_4()
-        .child(
-            Section::new("Save the current look", "colour · brightness · power").child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .items_center()
-                    .child(input_compact(&panel.profile_name))
-                    .child(
-                        Button::new("profile-save")
-                            .label("Save")
-                            .on_click(cx.listener(|panel, _e, _w, cx| {
-                                let name = panel.profile_name.read(cx).value().trim().to_string();
-                                if name.is_empty() {
-                                    panel.err = Some("give the profile a name".into());
-                                    cx.notify();
-                                    return;
-                                }
-                                panel.profile_name.update(cx, |_s, _cx| {});
-                                panel.kbd_action(vec!["profile".into(), "save".into(), name], cx);
-                                panel.refresh_profiles(cx);
-                            })),
-                    ),
-            ),
-        )
-        .child(
+    lanes(
+        layout,
+        vec![
+            Section::new("Save the current look", "colour · brightness · power")
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_2()
+                        .items_center()
+                        .child(input_compact(&panel.profile_name))
+                        .child(
+                            Button::new("profile-save")
+                                .label("Save")
+                                .on_click(cx.listener(|panel, _e, _w, cx| {
+                                    let name =
+                                        panel.profile_name.read(cx).value().trim().to_string();
+                                    if name.is_empty() {
+                                        panel.err = Some("give the profile a name".into());
+                                        cx.notify();
+                                        return;
+                                    }
+                                    panel.profile_name.update(cx, |_s, _cx| {});
+                                    panel.kbd_action(
+                                        vec!["profile".into(), "save".into(), name],
+                                        cx,
+                                    );
+                                    panel.refresh_profiles(cx);
+                                })),
+                        ),
+                )
+                .into_any_element(),
+        ],
+        vec![
             Section::new(
                 "Saved profiles",
                 SharedString::from(format!("{} profiles", rows.len())),
@@ -516,6 +665,7 @@ fn profiles(panel: &mut Panel, cx: &mut GpuiContext<Panel>) -> gpui_kit::AnyElem
                             .flex()
                             .justify_between()
                             .items_center()
+                            .gap_3()
                             .py_1()
                             .border_b_1()
                             .border_color(theme::LINE)
@@ -578,9 +728,10 @@ fn profiles(panel: &mut Panel, cx: &mut GpuiContext<Panel>) -> gpui_kit::AnyElem
                             .into_any_element()
                     })
                     .collect()
-            }),
-        )
-        .into_any_element()
+            })
+            .into_any_element(),
+        ],
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -632,6 +783,7 @@ fn fan_unavailable(panel: &Panel, state: &FanState) -> gpui_kit::AnyElement {
 
 fn fans(
     panel: &mut Panel,
+    layout: Breakpoint,
     window: &mut Window,
     cx: &mut GpuiContext<Panel>,
 ) -> gpui_kit::AnyElement {
@@ -645,23 +797,21 @@ fn fans(
         .map(|m| m.is_curve())
         .unwrap_or(false);
 
-    div()
-        .flex()
-        .flex_col()
-        .gap_4()
-        .child(error_banner(panel))
-        .child(
+    lanes(
+        layout,
+        vec![
             Section::new("Mode", SharedString::from(f.mode.clone()))
                 .child(
                     div()
                         .flex()
+                        .flex_wrap()
                         .gap_2()
                         .children(
-                    FanMode::ALL
-                        .iter()
-                        .enumerate()
-                        .map(|(i, m)| mode_chip(panel, i, *m, window, cx)),
-                ),
+                            FanMode::ALL
+                                .iter()
+                                .enumerate()
+                                .map(|(i, m)| mode_chip(panel, i, *m, window, cx)),
+                        ),
                 )
                 .when(stale, |el| {
                     el.child(
@@ -690,56 +840,13 @@ fn fans(
                                 f.ceiling_c as i32
                             )),
                     )
-                }),
-        )
-        .child(
+                })
+                .into_any_element(),
             Section::new("Fans", SharedString::from(format!("ceiling {} °C", f.ceiling_c as i32)))
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap_6()
-                        .children(f.fans.iter().enumerate().map(|(i, fan)| {
-                            widgets::labeled_gauge(
-                                "fans-duty",
-                                i,
-                                &fan.label,
-                                format!("{}%", fan.duty_pct.unwrap_or(0)),
-                                fan.rpm
-                                    .map(|rpm| format!("{rpm} rpm"))
-                                    .unwrap_or_else(|| "stopped".into()),
-                                fan.duty_pct.unwrap_or(0) as f32 / 100.,
-                                theme::ACCENT.into(),
-                                window,
-                                cx,
-                            )
-                        }))
-                        .children(
-                            [
-                                ("CPU", f.cpu_temp_c),
-                                ("GPU", f.gpu_temp_c),
-                            ]
-                            .iter()
-                            .enumerate()
-                            .filter_map(|(i, (label, temp))| {
-                                temp.map(|t| {
-                                    widgets::labeled_gauge(
-                                        "fans-temp",
-                                        i,
-                                        label,
-                                        format!("{t} °C"),
-                                        format!("ceiling {} °C", f.ceiling_c as i32),
-                                        t as f32 / f.ceiling_c as f32,
-                                        widgets::temp_color(t),
-                                        window,
-                                        cx,
-                                    )
-                                })
-                            }),
-                        ),
-                ),
-        )
-        .child(
+                .child(gauge_grid(&f, "fans", layout, window, cx))
+                .into_any_element(),
+        ],
+        vec![
             Section::new(
                 "Manual duty",
                 if f.mode == "manual" {
@@ -767,14 +874,75 @@ fn fans(
                                 panel.fan_action(vec!["turbo".into()], cx);
                             })),
                     ),
-            ),
+            )
+            .into_any_element(),
+            curve_editor(panel, layout, cx, &f),
+        ],
+    )
+}
+
+/// The fan duty and temperature readouts as one wrapping grid.
+///
+/// Overview and Fans share this so the two views cannot drift apart: the same
+/// snapshot has to read the same way on both, or the user has to learn the
+/// layout twice.
+fn gauge_grid(
+    f: &backend::fan::RawFanStatus,
+    channel: &'static str,
+    layout: Breakpoint,
+    window: &mut Window,
+    cx: &mut gpui_kit::App,
+) -> gpui_kit::AnyElement {
+    let min_w = layout.gauge_min_w();
+    div()
+        .flex()
+        .flex_wrap()
+        .gap_6()
+        .children(f.fans.iter().enumerate().map(|(i, fan)| {
+            widgets::labeled_gauge(
+                channel,
+                i,
+                &fan.label,
+                format!("{}%", fan.duty_pct.unwrap_or(0)),
+                fan.rpm
+                    .map(|rpm| format!("{rpm} rpm"))
+                    .unwrap_or_else(|| "stopped".into()),
+                fan.duty_pct.unwrap_or(0) as f32 / 100.,
+                theme::ACCENT.into(),
+                min_w,
+                window,
+                cx,
+            )
+        }))
+        .children(
+            [("CPU", f.cpu_temp_c), ("GPU", f.gpu_temp_c)]
+                .iter()
+                .enumerate()
+                .filter_map(|(i, (label, temp))| {
+                    temp.map(|t| {
+                        widgets::labeled_gauge(
+                            channel,
+                            // Offset past the fans so the two never share a bar
+                            // id inside one view.
+                            100 + i,
+                            label,
+                            format!("{t} °C"),
+                            format!("ceiling {} °C", f.ceiling_c as i32),
+                            t as f32 / f.ceiling_c as f32,
+                            widgets::temp_color(t),
+                            min_w,
+                            window,
+                            cx,
+                        )
+                    })
+                }),
         )
-        .child(curve_editor(panel, cx, &f))
         .into_any_element()
 }
 
 fn curve_editor(
     panel: &mut Panel,
+    layout: Breakpoint,
     cx: &mut GpuiContext<Panel>,
     f: &backend::fan::RawFanStatus,
 ) -> gpui_kit::AnyElement {
@@ -810,7 +978,10 @@ fn curve_editor(
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .min_w(px(120.))
+                    // Below the wide layout a lane is the whole pane and five
+                    // columns of sliders would leave each one unreadably short,
+                    // so they wrap two or three to a row instead.
+                    .min_w(if layout.lanes() == 2 { px(150.) } else { px(120.) })
                     .flex_1()
                     .child(
                         div()
@@ -888,7 +1059,8 @@ fn slider_inline(
     _cx: &mut GpuiContext<Panel>,
 ) -> gpui_kit::AnyElement {
     div()
-        .w(px(160.))
+        .w_full()
+        .min_w(px(96.))
         .child(Slider::new(state))
         .into_any_element()
 }
@@ -909,17 +1081,38 @@ use gpui_kit::{Render, Window as GpuiWindow};
 impl Render for Panel {
     fn render(&mut self, window: &mut GpuiWindow, cx: &mut GpuiContext<Self>) -> impl IntoElement {
         let view = self.view;
+        // One decision per frame, read from the window rather than tracked in
+        // state: a resize has to take effect on the very next paint, and a
+        // cached copy would be one frame stale at best and forever stale if the
+        // observer were dropped.
+        let layout = Breakpoint::for_window(window);
         // The web changed pages instantly; this fades the column in over
         // `SWITCH` instead, keyed on the view generation so returning to a view
         // replays it.
         let fade = motion::fade(self.view_seq, window, cx);
 
         let content = match view {
-            View::Home => home(self, window, cx),
-            View::Lighting => lighting(self, window, cx),
-            View::Profiles => profiles(self, cx),
-            View::Fans => fans(self, window, cx),
+            View::Home => home(self, layout, window, cx),
+            View::Lighting => lighting(self, layout, window, cx),
+            View::Profiles => profiles(self, layout, cx),
+            View::Fans => fans(self, layout, window, cx),
         };
+
+        let gutter = layout.gutter();
+        let column = div()
+            .flex()
+            .flex_col()
+            .gap(layout.gap())
+            .w_full()
+            // Not fully transparent at 0: the first frame after a switch would
+            // otherwise be a blank pane.
+            .opacity(0.25 + 0.75 * fade)
+            .child(view_header(view))
+            .child(error_banner(self))
+            .when(self.busy, |el| {
+                el.child(div().text_xs().text_color(theme::FAINT).child("working…"))
+            })
+            .child(content);
 
         div()
             .id("panel-root")
@@ -945,29 +1138,19 @@ impl Render for Panel {
                     cx.stop_propagation();
                 }),
             )
-            .child(sidebar(self, window, cx))
+            .child(sidebar(self, layout, window, cx))
             .child(
                 div().flex_1().h_full().overflow_y_scrollbar().child(
                     div()
-                        .flex()
-                        .flex_col()
-                        .p_6()
-                        .gap_4()
-                        // Not fully transparent at 0: the first frame after a
-                        // switch would otherwise be a blank pane.
-                        .opacity(0.25 + 0.75 * fade)
-                        // `max_w` alone let wide children (the gauge row, the
-                        // curve help text) push the column past the window and
-                        // get clipped. `w_full` pins it to the pane first, and
-                        // `max_w` keeps the Overview column readable.
                         .w_full()
-                        .max_w(px(940.))
-                        .child(view_header(view))
-                        .child(error_banner(self))
-                        .when(self.busy, |el| {
-                            el.child(div().text_xs().text_color(theme::FAINT).child("working…"))
-                        })
-                        .child(content),
+                        .px(gutter)
+                        .py(gutter)
+                        // Only the wide layout caps the column, and then it
+                        // centres it. The old `max_w(940)` applied at every size,
+                        // which is what left the right-hand gutter empty on any
+                        // window wider than the panel's nominal size.
+                        .when_some(layout.content_max_w(), |el, max| el.mx_auto().max_w(max))
+                        .child(column),
                 ),
             )
     }
@@ -977,12 +1160,15 @@ impl Render for Panel {
 // Home
 // ---------------------------------------------------------------------------
 
-fn home(panel: &Panel, window: &mut Window, cx: &mut GpuiContext<Panel>) -> gpui_kit::AnyElement {
-    div()
-        .flex()
-        .flex_col()
-        .gap_4()
-        .child(
+fn home(
+    panel: &Panel,
+    layout: Breakpoint,
+    window: &mut Window,
+    cx: &mut GpuiContext<Panel>,
+) -> gpui_kit::AnyElement {
+    lanes(
+        layout,
+        vec![
             Section::new("Keyboard", if panel.kbd.enabled { "on" } else { "off" })
                 .child(
                     div()
@@ -1021,9 +1207,10 @@ fn home(panel: &Panel, window: &mut Window, cx: &mut GpuiContext<Panel>) -> gpui
                     panel.accent(),
                     panel.glow(),
                     panel.kbd.enabled,
-                )),
-        )
-        .child(
+                ))
+                .into_any_element(),
+        ],
+        vec![
             Section::new(
                 "Fans",
                 panel
@@ -1038,46 +1225,7 @@ fn home(panel: &Panel, window: &mut Window, cx: &mut GpuiContext<Panel>) -> gpui
                     .text_color(theme::FAINT)
                     .child("reading the fan snapshot…")
                     .into_any_element(),
-                Some(f) => div()
-                    .flex()
-                    .flex_wrap()
-                    .gap_6()
-                    .children(f.fans.iter().enumerate().map(|(i, fan)| {
-                        widgets::labeled_gauge(
-                            "home-duty",
-                            i,
-                            &fan.label,
-                            format!("{}%", fan.duty_pct.unwrap_or(0)),
-                            fan.rpm
-                                .map(|rpm| format!("{rpm} rpm"))
-                                .unwrap_or_else(|| "stopped".into()),
-                            fan.duty_pct.unwrap_or(0) as f32 / 100.,
-                            theme::ACCENT.into(),
-                            window,
-                            cx,
-                        )
-                    }))
-                    .children(
-                        [("CPU", f.cpu_temp_c), ("GPU", f.gpu_temp_c)]
-                            .iter()
-                            .enumerate()
-                            .filter_map(|(i, (label, temp))| {
-                                temp.map(|t| {
-                                    widgets::labeled_gauge(
-                                        "home-temp",
-                                        i,
-                                        label,
-                                        format!("{t} °C"),
-                                        format!("ceiling {} °C", f.ceiling_c as i32),
-                                        t as f32 / f.ceiling_c as f32,
-                                        widgets::temp_color(t),
-                                        window,
-                                        cx,
-                                    )
-                                })
-                            }),
-                    )
-                    .into_any_element(),
+                Some(f) => gauge_grid(f, "home", layout, window, cx),
                 None => div()
                     .text_sm()
                     .text_color(theme::FAINT)
@@ -1086,7 +1234,8 @@ fn home(panel: &Panel, window: &mut Window, cx: &mut GpuiContext<Panel>) -> gpui
                         None => "reading the fan snapshot…".to_string(),
                     })
                     .into_any_element(),
-            }),
-        )
-        .into_any_element()
+            })
+            .into_any_element(),
+        ],
+    )
 }
