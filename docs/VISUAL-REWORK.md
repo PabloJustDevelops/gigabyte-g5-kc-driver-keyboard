@@ -297,6 +297,22 @@ The slider needed care: `slider_bar` is the *filled* part of the track, not the
 groove. Its dark default is near-white, which made a 3 px line the loudest
 thing on the Lighting view. It is now the accent, with a white thumb.
 
-Still open, in plan order: the missing font (§7.2 — `IBM Plex Sans` is not on
-this machine and has never been bundled), motion (Phase 4), states and density
-(Phase 5) and accessibility (Phase 6).
+Still open, in plan order: the missing font (§7.2), motion (Phase 4), states
+and density (Phase 5) and accessibility (Phase 6).
+
+### The font (§7.2), half-solved
+
+`views.rs` asked for `IBM Plex Sans`, which is not installed and was never
+packaged, so fontconfig substituted something arbitrary per weight. That is
+fixed without deciding §7.2: `theme::ui_font()` now resolves a family at
+startup from `cx.text_system().all_font_names()`, taking the first candidate
+the machine actually has (`IBM Plex Sans` → Inter → Noto Sans → DejaVu Sans →
+Cantarell) and chaining the rest behind it. Metrics are now consistent on any
+machine, and a machine that *does* have IBM Plex picks it up for free.
+
+`theme::mono_font()` does the same for readouts, applied to the gauge values
+and the section readouts so the numbers line up in a column.
+
+The open question is therefore smaller than it was: not *which font* but
+whether to **bundle** IBM Plex (≈1 MB, OFF-licence, needs `install.sh` and
+`PKGBUILD` changes) or accept the system-family stack above.

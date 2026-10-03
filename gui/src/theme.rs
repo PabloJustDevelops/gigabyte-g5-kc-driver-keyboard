@@ -60,6 +60,81 @@ pub fn parse_hex(text: &str) -> Option<Rgba> {
     Some(gpui_kit::rgb(v))
 }
 
+/// Families we would like, best first. The first one the machine actually
+/// has wins, and the rest become the fallback chain.
+///
+/// "IBM Plex Sans" was hard-coded in `views.rs` but is not installed and was
+/// never packaged, so fontconfig substituted something arbitrary per weight —
+/// inconsistent metrics and weights. That is an unported assumption from the
+/// web build, not a decision. Keeping the name first means a machine that
+/// *does* have it (or a future bundled copy) picks it up for free.
+const UI_CANDIDATES: &[&str] = &[
+    "IBM Plex Sans",
+    "Inter",
+    "Noto Sans",
+    "DejaVu Sans",
+    "Cantarell",
+];
+
+/// Monospace for readouts: hex, temperatures, duty percentages.
+const MONO_CANDIDATES: &[&str] = &[
+    "IBM Plex Mono",
+    "JetBrains Mono",
+    "Noto Sans Mono",
+    "DejaVu Sans Mono",
+    "Hack",
+];
+
+type FontChain = gpui_kit::FontFallbacks;
+
+static UI_FONT: std::sync::OnceLock<(gpui_kit::SharedString, FontChain)> =
+    std::sync::OnceLock::new();
+static MONO_FONT: std::sync::OnceLock<(gpui_kit::SharedString, FontChain)> =
+    std::sync::OnceLock::new();
+
+/// Pick the best available family from `candidates` and chain the rest behind
+/// it, so a glyph that is missing from the winner still renders.
+fn resolve(cx: &gpui_kit::App, candidates: &[&str]) -> (gpui_kit::SharedString, FontChain) {
+    let available = cx.text_system().all_font_names();
+    let chain: Vec<String> = candidates
+        .iter()
+        .filter(|name| available.iter().any(|have| have == *name))
+        .map(|name| (*name).to_string())
+        .collect();
+    match chain.split_first() {
+        Some((first, rest)) => (
+            gpui_kit::SharedString::from(first.clone()),
+            FontChain::from_fonts(rest.to_vec()),
+        ),
+        // Nothing matched; let GPUI pick its default rather than render tofu.
+        None => (
+            gpui_kit::SharedString::from(candidates[0]),
+            FontChain::from_fonts(candidates[1..].iter().map(|n| (*n).to_string()).collect()),
+        ),
+    }
+}
+
+/// The UI font. `apply_kit_theme` fills this in at startup; before that it is
+/// an empty chain, which renders with GPUI's default family.
+pub fn ui_font() -> gpui_kit::Font {
+    let mut font = gpui_kit::Font::default();
+    if let Some((family, fallbacks)) = UI_FONT.get() {
+        font.family = family.clone();
+        font.fallbacks = Some(fallbacks.clone());
+    }
+    font
+}
+
+/// The monospace font, for readouts that should line up in a column.
+pub fn mono_font() -> gpui_kit::Font {
+    let mut font = gpui_kit::Font::default();
+    if let Some((family, fallbacks)) = MONO_FONT.get() {
+        font.family = family.clone();
+        font.fallbacks = Some(fallbacks.clone());
+    }
+    font
+}
+
 /// Pin the component library's theme to ours.
 ///
 /// The kit ships its own palette (`gpui_component::theme`) and renders every
@@ -74,6 +149,8 @@ pub fn apply_kit_theme(cx: &mut gpui_kit::App) {
     use gpui_kit::component::theme::{Theme, ThemeMode};
 
     Theme::change(ThemeMode::Dark, None, cx);
+    let _ = UI_FONT.set(resolve(cx, UI_CANDIDATES));
+    let _ = MONO_FONT.set(resolve(cx, MONO_CANDIDATES));
     // `slider_bar` is the *filled* part of the track, not the groove. Its dark
     // default is near-white, which turned every slider into a bright bar and
     // made the loudest thing on the Lighting view a 3 px line. The groove

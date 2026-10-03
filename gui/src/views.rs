@@ -4,7 +4,7 @@
 use gpui_kit::{
     Context as GpuiContext, IntoElement, ParentElement, SharedString, Styled,
     component::button::Button, component::input::InputState, component::slider::Slider, div,
-    prelude::*, px, rgb,
+    prelude::*, px,
 };
 
 use crate::backend::{self, fan::FanMode};
@@ -123,8 +123,8 @@ fn error_banner(panel: &Panel) -> gpui_kit::AnyElement {
         Some(text) => div()
             .rounded_sm()
             .border_1()
-            .border_color(rgb(0x5c2430))
-            .bg(rgb(0x241318))
+            .border_color(theme::mix(theme::PANEL, theme::DANGER, 0.35))
+            .bg(theme::mix(theme::PANEL, theme::DANGER, 0.12))
             .px_3()
             .py_2()
             .text_sm()
@@ -519,8 +519,8 @@ fn fans(panel: &mut Panel, cx: &mut GpuiContext<Panel>) -> gpui_kit::AnyElement 
                         div()
                             .rounded_sm()
                             .border_1()
-                            .border_color(rgb(0x4d3a1a))
-                            .bg(rgb(0x241c0e))
+                            .border_color(theme::mix(theme::PANEL, theme::WARN, 0.35))
+                            .bg(theme::mix(theme::PANEL, theme::WARN, 0.12))
                             .px_3()
                             .py_2()
                             .text_sm()
@@ -764,7 +764,7 @@ impl Render for Panel {
             .size_full()
             .bg(theme::BG)
             .text_color(theme::TEXT)
-            .font_family("IBM Plex Sans")
+            .font(theme::ui_font())
             .child(sidebar(self, cx))
             .child(
                 div().flex_1().h_full().overflow_y_scrollbar().child(

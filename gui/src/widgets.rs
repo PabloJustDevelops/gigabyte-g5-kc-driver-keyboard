@@ -60,7 +60,13 @@ impl RenderOnce for Section {
                             .text_color(theme::TEXT)
                             .child(self.title),
                     )
-                    .child(div().text_xs().text_color(theme::FAINT).child(self.readout)),
+                    .child(
+                        div()
+                            .text_xs()
+                            .font(theme::mono_font())
+                            .text_color(theme::FAINT)
+                            .child(self.readout),
+                    ),
             )
             .children(self.children)
     }
@@ -132,6 +138,7 @@ pub fn labeled_gauge(
             div().flex().items_baseline().gap_1().child(
                 div()
                     .text_size(px(22.))
+                    .font(theme::mono_font())
                     .font_weight(gpui_kit::FontWeight::BOLD)
                     .text_color(theme::TEXT)
                     .child(value),
