@@ -314,5 +314,36 @@ machine, and a machine that *does* have IBM Plex picks it up for free.
 and the section readouts so the numbers line up in a column.
 
 The open question is therefore smaller than it was: not *which font* but
-whether to **bundle** IBM Plex (≈1 MB, OFF-licence, needs `install.sh` and
-`PKGBUILD` changes) or accept the system-family stack above.
+whether to **bundle** IBM Plex (≈1 MB, OFL-licence) or accept the system-family
+stack above.
+
+**Decided: bundled.** `gui/fonts/` holds three faces — Plex Sans Regular, Plex
+Sans Bold and Plex Mono Regular, 552 KB total — compiled into the binary with
+`include_bytes!` and registered in `apply_kit_theme` before the family
+resolution runs. The panel therefore no longer depends on anything being
+installed system-wide, which is what the web build already assumed. The full
+family is ~40 weights and would cost ~15 MB for no visible gain, so only the
+three the panel actually uses ship. `fonts/OFL.txt` travels with them, and the
+PKGBUILD installs it under `share/doc/g5kbd/`, as the SIL OFL 1.1 requires.
+
+Note this only needed `PKGBUILD` changes (six new `source()` entries plus the
+licence install), not `install.sh`: the faces are inside the binary.
+
+### Phase 5 — states
+
+`panel.fan` is `None` both while the first `g5fan status` is in flight and
+when `g5fan` is genuinely missing, and the old code reported the second as the
+first: opening the panel on a healthy machine flashed "g5fan is not installed
+— run `g5fan doctor`" for three seconds. `fan_state()` now separates
+`Loading` from `Missing`, and both the Overview and the Fans view use it.
+
+### Still open
+
+**Phase 4 (motion)** and the keyboard half of **Phase 6** are not done. Both
+need the sidebar and mode chips to become focusable: GPUI only exposes
+`:focus-visible` styling through `InteractiveElement::focus_visible`, which
+requires a `FocusHandle` per control (`track_focus`), and `accesskit::Role` is
+not re-exported by `gpui-kit`, so labelling them means depending on `accesskit`
+directly. That is a real refactor — one focus handle per nav item and mode
+chip, plus Tab/Enter handling in `Panel` — rather than a styling pass, so it
+is left as its own piece of work instead of half-applied.

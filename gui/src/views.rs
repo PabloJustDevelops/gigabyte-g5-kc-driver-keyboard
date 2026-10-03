@@ -478,22 +478,53 @@ fn profiles(panel: &mut Panel, cx: &mut GpuiContext<Panel>) -> gpui_kit::AnyElem
 // Fans
 // ---------------------------------------------------------------------------
 
+/// What the fan panel knows right now. `panel.fan` is `None` both while the
+/// first `g5fan status` is still in flight and when `g5fan` is genuinely
+/// missing, and the old code reported the second as the first — so opening
+/// the panel on a healthy machine flashed "g5fan is not installed" for three
+/// seconds.
+enum FanState {
+    Loading,
+    Missing(String),
+    Ready(backend::fan::RawFanStatus),
+}
+
+fn fan_state(panel: &Panel) -> FanState {
+    if let Some(f) = panel.fan.clone() {
+        return FanState::Ready(f);
+    }
+    match panel.fan_error.clone() {
+        Some(error) => FanState::Missing(error),
+        None => FanState::Loading,
+    }
+}
+
+/// A card for the two states where there is nothing to plot yet.
+fn fan_unavailable(panel: &Panel, state: &FanState) -> gpui_kit::AnyElement {
+    let (readout, message) = match state {
+        FanState::Loading => ("reading…", "asking g5fan for a snapshot".to_string()),
+        FanState::Missing(error) => (
+            "unavailable",
+            format!("{error} — run `g5fan doctor` on a terminal"),
+        ),
+        FanState::Ready(_) => unreachable!("fan_unavailable takes the states without a snapshot"),
+    };
+    div()
+        .flex()
+        .flex_col()
+        .gap_4()
+        .child(error_banner(panel))
+        .child(
+            Section::new("Fans", readout)
+                .child(div().text_sm().text_color(theme::FAINT).child(message)),
+        )
+        .into_any_element()
+}
+
 fn fans(panel: &mut Panel, cx: &mut GpuiContext<Panel>) -> gpui_kit::AnyElement {
-    let Some(f) = panel.fan.clone() else {
-        return div()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .child(error_banner(panel))
-            .child(
-                Section::new("Fans", "unavailable").child(
-                    div()
-                        .text_sm()
-                        .text_color(theme::FAINT)
-                        .child("g5fan is not installed or the snapshot is missing — run `g5fan doctor` on a terminal"),
-                ),
-            )
-            .into_any_element();
+    let f = match fan_state(panel) {
+        FanState::Ready(f) => f,
+        state => return fan_unavailable(panel, &state),
     };
 
     let stale = f.stale || !f.daemon;
@@ -850,6 +881,11 @@ fn home(panel: &Panel) -> gpui_kit::AnyElement {
                     .unwrap_or_else(|| "unavailable".into()),
             )
             .child(match &panel.fan {
+                None if panel.fan_error.is_none() => div()
+                    .text_sm()
+                    .text_color(theme::FAINT)
+                    .child("reading the fan snapshot…")
+                    .into_any_element(),
                 Some(f) => div()
                     .flex()
                     .flex_wrap()
@@ -884,7 +920,10 @@ fn home(panel: &Panel) -> gpui_kit::AnyElement {
                 None => div()
                     .text_sm()
                     .text_color(theme::FAINT)
-                    .child("g5fan is not answering — run `g5fan doctor` on a terminal")
+                    .child(match &panel.fan_error {
+                        Some(e) => format!("{e} — run `g5fan doctor` on a terminal"),
+                        None => "reading the fan snapshot…".to_string(),
+                    })
                     .into_any_element(),
             }),
         )

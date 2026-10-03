@@ -60,14 +60,21 @@ pub fn parse_hex(text: &str) -> Option<Rgba> {
     Some(gpui_kit::rgb(v))
 }
 
-/// Families we would like, best first. The first one the machine actually
-/// has wins, and the rest become the fallback chain.
+/// IBM Plex, compiled into the binary. Bundling it is what makes the panel look
+/// the same on every machine — the web build shipped these files, so a user
+/// without Plex installed was silently getting substituted metrics. Three faces
+/// is all the panel uses (regular, bold, mono regular); the full family is
+/// ~40 weights and would cost ~15 MB for no visible gain.
 ///
-/// "IBM Plex Sans" was hard-coded in `views.rs` but is not installed and was
-/// never packaged, so fontconfig substituted something arbitrary per weight —
-/// inconsistent metrics and weights. That is an unported assumption from the
-/// web build, not a decision. Keeping the name first means a machine that
-/// *does* have it (or a future bundled copy) picks it up for free.
+/// SIL Open Font License 1.1; see `fonts/OFL.txt`.
+const PLEX_SANS: &[u8] = include_bytes!("../fonts/IBMPlexSans-Regular.ttf");
+const PLEX_SANS_BOLD: &[u8] = include_bytes!("../fonts/IBMPlexSans-Bold.ttf");
+const PLEX_MONO: &[u8] = include_bytes!("../fonts/IBMPlexMono-Regular.ttf");
+
+/// Families we would like, best first. The first one the machine actually
+/// has wins, and the rest become the fallback chain. The bundled Plex is
+/// registered with the app, so it is normally the first match; the list keeps
+/// the panel legible if the fonts ever fail to register.
 const UI_CANDIDATES: &[&str] = &[
     "IBM Plex Sans",
     "Inter",
@@ -149,6 +156,16 @@ pub fn apply_kit_theme(cx: &mut gpui_kit::App) {
     use gpui_kit::component::theme::{Theme, ThemeMode};
 
     Theme::change(ThemeMode::Dark, None, cx);
+    // Register the bundled faces *before* asking which families exist, so the
+    // resolution below picks them.
+    cx.text_system()
+        .add_fonts(
+            [PLEX_SANS, PLEX_SANS_BOLD, PLEX_MONO]
+                .into_iter()
+                .map(std::borrow::Cow::Borrowed)
+                .collect(),
+        )
+        .expect("register the bundled IBM Plex faces");
     let _ = UI_FONT.set(resolve(cx, UI_CANDIDATES));
     let _ = MONO_FONT.set(resolve(cx, MONO_CANDIDATES));
     // `slider_bar` is the *filled* part of the track, not the groove. Its dark

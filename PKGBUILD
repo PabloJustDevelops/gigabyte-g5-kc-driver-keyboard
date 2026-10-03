@@ -26,6 +26,7 @@ source=("src/g5kbd.py"
         "kernel/99-g5kbd.rules"
         "gui/Cargo.toml"
         "gui/Cargo.lock"
+        "gui/src/lib.rs"
         "gui/src/main.rs"
         "gui/src/panel.rs"
         "gui/src/views.rs"
@@ -34,6 +35,14 @@ source=("src/g5kbd.py"
         "gui/src/backend/mod.rs"
         "gui/src/backend/kbd.rs"
         "gui/src/backend/fan.rs"
+        "gui/tests/snapshot.rs"
+        # IBM Plex is compiled into the binary (see theme.rs), so the panel
+        # does not depend on any font being installed system-wide. The OFL
+        # requires the licence to travel with the fonts.
+        "gui/fonts/IBMPlexSans-Regular.ttf"
+        "gui/fonts/IBMPlexSans-Bold.ttf"
+        "gui/fonts/IBMPlexMono-Regular.ttf"
+        "gui/fonts/OFL.txt"
         "gui/g5kbd-gui.desktop"
         "gui/icons/128x128.png"
         "gui/icons/32x32.png"
@@ -44,7 +53,8 @@ source=("src/g5kbd.py"
 sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
             'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
             'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
-            'SKIP' 'SKIP' 'SKIP' 'SKIP')
+            'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
+            'SKIP' 'SKIP')
 
 build() {
   # --- kernel module against the running kernel's headers ---
@@ -101,4 +111,8 @@ package() {
     "$pkgdir/usr/share/doc/g5kbd/FAN-RESEARCH.md"
   install -Dm644 "$srcdir/docs/ROADMAP.md" \
     "$pkgdir/usr/share/doc/g5kbd/ROADMAP.md"
+  # The bundled IBM Plex faces are compiled into the binary; the SIL OFL 1.1
+  # requires the licence to be distributed with them.
+  install -Dm644 "$srcdir/gui/fonts/OFL.txt" \
+    "$pkgdir/usr/share/doc/g5kbd/fonts-OFL.txt"
 }
