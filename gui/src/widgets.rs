@@ -4,10 +4,11 @@
 // widgets (Button, Slider, Switch, Input, Toggle) cover the rest.
 
 use gpui_kit::{
-    AnyElement, BoxShadow, Hsla, IntoElement, ParentElement, RenderOnce, SharedString, Styled,
+    AnyElement, App, BoxShadow, Hsla, IntoElement, ParentElement, RenderOnce, SharedString, Styled,
     Window, div, px, relative,
 };
 
+use crate::motion;
 use crate::theme::{self, mix};
 
 // ---------------------------------------------------------------------------
@@ -76,20 +77,28 @@ impl RenderOnce for Section {
 // Bar — the horizontal fill used by fan duty and temperature
 // ---------------------------------------------------------------------------
 
-pub fn bar_fill(frac: f32, color: Hsla) -> AnyElement {
+/// `id` has to be stable and unique per bar: the spring keeps its position and
+/// velocity in window state under it, so a fresh id is what makes the bar jump
+/// instead of glide.
+pub fn bar_fill(
+    id: impl Into<gpui_kit::base::TransitionId>,
+    frac: f32,
+    color: Hsla,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    // Fan duty and temperature are polled every three seconds, so the target
+    // moves in steps. A spring carries velocity through those steps; a
+    // fixed-duration ease would restart from a standstill each time and read as
+    // a stutter on every reading.
+    let width = motion::glide(id, frac.clamp(0., 1.), window, cx);
     div()
         .h(px(6.))
         .w_full()
         .rounded_full()
         .bg(theme::FIELD)
         .overflow_hidden()
-        .child(
-            div()
-                .h_full()
-                .w(relative(frac.clamp(0., 1.)))
-                .rounded_full()
-                .bg(color),
-        )
+        .child(div().h_full().w(relative(width)).rounded_full().bg(color))
         .into_any_element()
 }
 
@@ -108,12 +117,20 @@ pub fn temp_color(temp_c: i32) -> Hsla {
 // LabeledGauge — "CPU  52 °C" + bar, used for fans and temperatures alike
 // ---------------------------------------------------------------------------
 
+/// `channel` and `index` together identify this gauge's bar. They have to be
+/// unique across a whole render pass — the spring state is filed under that id
+/// — so the two views number their gauges from different ranges.
+#[allow(clippy::too_many_arguments)]
 pub fn labeled_gauge(
+    channel: &'static str,
+    index: usize,
     label: &str,
     value: String,
     sub: String,
     frac: f32,
     color: Hsla,
+    window: &mut Window,
+    cx: &mut App,
 ) -> AnyElement {
     div()
         .flex()
@@ -144,7 +161,7 @@ pub fn labeled_gauge(
                     .child(value),
             ),
         )
-        .child(bar_fill(frac, color))
+        .child(bar_fill((index, channel), frac, color, window, cx))
         .into_any_element()
 }
 

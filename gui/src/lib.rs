@@ -2,6 +2,7 @@
 //! build the exact same views. `main.rs` is only the window boilerplate.
 
 pub mod backend;
+pub mod motion;
 pub mod panel;
 pub mod theme;
 pub mod views;

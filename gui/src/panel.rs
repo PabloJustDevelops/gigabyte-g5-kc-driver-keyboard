@@ -1,11 +1,11 @@
 // The root view: navigation, shared state, and the async plumbing that keeps
 // everything fresh without ever blocking the UI thread.
 
-use gpui_kit::{App, AppContext as _, Context, Entity, Subscription, Task, Window};
+use gpui_kit::{App, AppContext as _, Context, Entity, FocusHandle, Subscription, Task, Window};
 
 use crate::backend::{
     self,
-    fan::RawFanStatus,
+    fan::{FanMode, RawFanStatus},
     kbd::{self, KbState},
 };
 use crate::theme;
@@ -97,6 +97,21 @@ pub struct Panel {
     pub curve_dirty: bool,
 
     // infra
+    /// One focus handle per sidebar row. The rows are plain divs, so without
+    /// these they cannot be reached with the keyboard at all.
+    pub nav_focus: [FocusHandle; 4],
+    /// One per fan-mode chip, same reason as `nav_focus`.
+    pub mode_focus: Vec<FocusHandle>,
+    /// Bumped on every view change. The fade is keyed on it, so returning to a
+    /// view already seen replays the animation instead of resuming a stale one.
+    pub view_seq: u64,
+    /// Which sidebar row the pointer is over, if any. Hover styling cannot be
+    /// transitioned by the element itself — `.hover()` applies its styles the
+    /// instant the hitbox flips — so the row is told where the pointer is and
+    /// eases toward that value itself.
+    pub hover_nav: Option<usize>,
+    /// Same, for the fan-mode chips.
+    pub hover_mode: Option<usize>,
     pub tasks: Vec<Task<()>>,
     pub subs: Vec<Subscription>,
     /// transient error from the last action, cleared on the next success
@@ -190,10 +205,54 @@ impl Panel {
             curve_temp,
             curve_duty,
             curve_dirty: false,
+            // `cx.focus_handle()` starts with `tab_stop: false`, which keeps the
+            // handle out of the tab order even though `track_focus` puts it in the
+            // tab-stop map. Without this, Tab walks straight past the sidebar.
+            nav_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
+            mode_focus: FanMode::ALL
+                .iter()
+                .map(|_| cx.focus_handle().tab_stop(true))
+                .collect(),
+            view_seq: 0,
+            hover_nav: None,
+            hover_mode: None,
             tasks: Vec::new(),
             subs: Vec::new(),
             err: None,
             busy: false,
+        }
+    }
+
+    /// Switch to `view` and arm the fade.
+    ///
+    /// Every caller goes through here rather than assigning `self.view`: the
+    /// mouse handler, the keyboard handler and the snapshot tests each look the
+    /// same from the outside, and a switch that forgot to bump `view_seq` would
+    /// silently not animate.
+    pub fn set_view(&mut self, view: View, cx: &mut Context<Self>) {
+        if self.view == view {
+            return;
+        }
+        self.view = view;
+        self.view_seq += 1;
+        cx.notify();
+    }
+
+    /// Record which sidebar row the pointer is over, for the hover transition.
+    pub fn set_hover_nav(&mut self, index: usize, on: bool, cx: &mut Context<Self>) {
+        let next = on.then_some(index);
+        if self.hover_nav != next {
+            self.hover_nav = next;
+            cx.notify();
+        }
+    }
+
+    /// Same, for the fan-mode chips.
+    pub fn set_hover_mode(&mut self, index: usize, on: bool, cx: &mut Context<Self>) {
+        let next = on.then_some(index);
+        if self.hover_mode != next {
+            self.hover_mode = next;
+            cx.notify();
         }
     }
 

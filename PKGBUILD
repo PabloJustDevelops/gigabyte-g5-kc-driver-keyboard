@@ -28,6 +28,7 @@ source=("src/g5kbd.py"
         "gui/Cargo.lock"
         "gui/src/lib.rs"
         "gui/src/main.rs"
+        "gui/src/motion.rs"
         "gui/src/panel.rs"
         "gui/src/views.rs"
         "gui/src/widgets.rs"
@@ -50,11 +51,12 @@ source=("src/g5kbd.py"
         "docs/WINDOWS-RESEARCH.md"
         "docs/FAN-RESEARCH.md"
         "docs/ROADMAP.md")
-sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
+sha256sums=(
             'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
             'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
             'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
-            'SKIP' 'SKIP')
+            'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
+            'SKIP' 'SKIP' 'SKIP')
 
 build() {
   # --- kernel module against the running kernel's headers ---

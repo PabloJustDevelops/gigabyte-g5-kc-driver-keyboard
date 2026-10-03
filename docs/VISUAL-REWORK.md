@@ -337,13 +337,85 @@ first: opening the panel on a healthy machine flashed "g5fan is not installed
 — run `g5fan doctor`" for three seconds. `fan_state()` now separates
 `Loading` from `Missing`, and both the Overview and the Fans view use it.
 
+### Phase 6 — keyboard and roles
+
+The sidebar rows and the fan-mode chips are plain divs. `on_click` alone left
+them unreachable with the keyboard and invisible to a screen reader, so the
+panel could not be navigated without a mouse.
+
+`Panel` now carries `nav_focus: [FocusHandle; 4]` and
+`mode_focus: Vec<FocusHandle>`, one per control, and every row is
+`track_focus`ed, given a role (`accesskit::Role::Tab` and `::RadioButton`) and
+a `focus_visible` ring. The root listens for Tab on the bubble phase and calls
+`window.focus_next` / `focus_prev`, which is how GPUI walks its tab ring.
+
+Two details worth recording, because both look like they should work and do
+not:
+
+- `cx.focus_handle()` starts with `tab_stop: false`. `track_focus` puts the
+  handle *in the tab-stop map* but leaves it unreachable, so Tab walked
+  straight past the sidebar until the handles were created with
+  `.tab_stop(true)`.
+- `accesskit::Role` is not re-exported by `gpui-kit`, so `accesskit` is now a
+  direct dependency (`0.24`, feature `enumn`). It is what the crate already
+  pins, so this adds no new version to the graph.
+
+`tests/snapshot.rs` covers it: the rows activate on Enter *and* Space, Tab
+reaches a control, and Shift+Tab walks back out.
+
+### Phase 4 — motion
+
+`gui/src/motion.rs` holds the timings in one place — hover 120 ms (the web's
+`--t-fast`), view switch 180 ms, live-dot breath 1600 ms, gauge glide 280 ms
+— and every animated value goes through `gpui_base`'s `transition`, `spring`
+and `animate_keyframes` rather than raw `Animation`.
+
+That choice is the whole answer to "respect reduced motion": those helpers
+consult `App::reduce_motion` on every sample, and `gpui_kit::init` (called by
+both `main.rs` and the snapshot harness) reads the desktop's preference into
+that flag through the XDG portal's `org.freedesktop.appearance`. The web's
+`@media (prefers-reduced-motion: reduce)` reset has an equivalent that was
+already wired up and simply unused.
+
+What animates:
+
+- **Hover** on the sidebar rows and the mode chips. `.hover()` applies its
+  styles the instant the hitbox flips, which is why the sidebar felt like it
+  snapped; easing needs the pointer position as a *value*, so `Panel` records
+  `hover_nav` / `hover_mode` from an `on_hover` listener and each control
+  transitions a 0→1 amount toward its own colour pair. Press and focus rings
+  stay instant on purpose: a delayed focus ring is worse than no feedback.
+- **The view switch** fades the content column in. It is keyed on
+  `Panel::view_seq`, bumped by `set_view`, so returning to a view already seen
+  replays the fade. The first frame is drawn at 25 % opacity rather than 0, or
+  the pane would blank for a frame on every switch.
+- **The live dot** next to the Effects readout while `breathe` or `cycle` is
+  running — an infinite, alternating keyframe animation, so it breathes
+  instead of blinking.
+- **The gauges** glide on a spring. Their target moves in steps every three
+  seconds; a fixed-duration ease restarts from zero velocity on each step and
+  reads as a stutter, while a spring carries velocity through the retarget.
+
+Two things the snapshots caught while doing this:
+
+- The selected mode chip was `rgba(0x00aaff22)`. Interpolating it with
+  `theme::mix` forces alpha to 1, which turned the selected chip into a solid
+  blue slab with its own sub-label unreadable on it. The tints are now opaque
+  mixes of `FIELD` and `ACCENT`.
+- The fade means a single rendered frame is a half-transparent pane, so the
+  harness gained a `settle()` helper: render, advance the clock past `SWITCH`,
+  render again. The motion helpers sample the background executor's clock,
+  which the headless scheduler moves, so this is deterministic rather than a
+  sleep.
+
+Checked and deliberately *not* done: spring feedback on the slider thumb. The
+kit's `Slider` owns its thumb and already springs the ring with
+`spring_control`; adding a second spring inside a dependency is not something
+this repo should carry. The gauges, which are ours, got the spring instead.
+
 ### Still open
 
-**Phase 4 (motion)** and the keyboard half of **Phase 6** are not done. Both
-need the sidebar and mode chips to become focusable: GPUI only exposes
-`:focus-visible` styling through `InteractiveElement::focus_visible`, which
-requires a `FocusHandle` per control (`track_focus`), and `accesskit::Role` is
-not re-exported by `gpui-kit`, so labelling them means depending on `accesskit`
-directly. That is a real refactor — one focus handle per nav item and mode
-chip, plus Tab/Enter handling in `Panel` — rather than a styling pass, so it
-is left as its own piece of work instead of half-applied.
+The contrast pass on the 8 px keycap legends and the 9–10.5 px uppercase
+labels is still not done: it needs measurement against the rendered PNGs
+rather than an opinion, and it is the one item in Phase 6 that cannot be
+settled from the code alone.

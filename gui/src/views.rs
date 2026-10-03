@@ -2,12 +2,13 @@
 // Panel methods, which own the async plumbing.
 
 use gpui_kit::{
-    Context as GpuiContext, IntoElement, ParentElement, SharedString, Styled,
+    Context as GpuiContext, IntoElement, ParentElement, SharedString, Styled, Window,
     component::button::Button, component::input::InputState, component::slider::Slider, div,
     prelude::*, px,
 };
 
 use crate::backend::{self, fan::FanMode};
+use crate::motion;
 use crate::panel::{Panel, View};
 use crate::theme;
 use crate::widgets::{self, Section};
@@ -17,7 +18,11 @@ use gpui_kit::component::scroll::ScrollableElement as _;
 // Shared pieces
 // ---------------------------------------------------------------------------
 
-fn sidebar(panel: &mut Panel, cx: &mut GpuiContext<Panel>) -> gpui_kit::AnyElement {
+fn sidebar(
+    panel: &mut Panel,
+    window: &mut Window,
+    cx: &mut GpuiContext<Panel>,
+) -> gpui_kit::AnyElement {
     let active = panel.view;
     let labels: [(&'static str, &'static str, bool); 4] = [
         ("Overview", "state · backend", active == View::Home),
@@ -57,51 +62,86 @@ fn sidebar(panel: &mut Panel, cx: &mut GpuiContext<Panel>) -> gpui_kit::AnyEleme
                         .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
                 ),
         )
-        .children(labels.iter().map(|(label, sub, is_active)| {
-            let target = match *label {
-                "Overview" => View::Home,
-                "Lighting" => View::Lighting,
-                "Profiles" => View::Profiles,
-                _ => View::Fans,
-            };
-            div()
-                .id(*label)
-                .px_2()
-                .py_1p5()
-                .rounded_sm()
-                .cursor_pointer()
-                .flex()
-                .flex_col()
-                // The web panel marked the active row with an accent-tinted
-                // fill, a hairline border and an accent rule on the left. The
-                // port had a flat grey fill, which is why the sidebar read as
-                // "nothing is selected" at a glance.
-                .border_l_2()
-                .when(*is_active, |el| {
-                    el.bg(theme::mix(theme::PANEL2, theme::ACCENT, 0.14))
-                        .border_color(theme::ACCENT)
-                })
-                .when(!*is_active, |el| {
-                    el.border_color(gpui_kit::rgba(0x00000000))
-                })
-                .hover(|el| el.bg(theme::PANEL))
-                .on_click(cx.listener(move |panel, _event, _window, cx| {
-                    panel.view = target;
-                    cx.notify();
-                }))
-                .child(
+        .children(
+            labels
+                .iter()
+                .enumerate()
+                .map(|(i, (label, sub, is_active))| {
+                    let target = match *label {
+                        "Overview" => View::Home,
+                        "Lighting" => View::Lighting,
+                        "Profiles" => View::Profiles,
+                        _ => View::Fans,
+                    };
+                    let focus = panel.nav_focus[i].clone();
+                    // `.hover()` applies its styles the instant the hitbox flips,
+                    // which is what made the sidebar feel like it snapped. Easing
+                    // the fill instead needs the pointer position as a value the
+                    // row can transition toward, so the row is told where it is.
+                    let warmth = motion::hover((i, "nav"), panel.hover_nav == Some(i), window, cx);
+                    let resting = if *is_active {
+                        theme::mix(theme::PANEL2, theme::ACCENT, 0.14)
+                    } else {
+                        theme::FIELD
+                    };
+                    let hovered = if *is_active {
+                        theme::mix(theme::PANEL2, theme::ACCENT, 0.26)
+                    } else {
+                        theme::PANEL
+                    };
                     div()
-                        .text_sm()
-                        .text_color(if *is_active {
-                            theme::ACCENT
-                        } else {
-                            theme::TEXT
+                        .id(*label)
+                        .px_2()
+                        .py_1p5()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .flex()
+                        .flex_col()
+                        .bg(motion::blend(resting, hovered, warmth))
+                        // The web panel marked the active row with an accent-tinted
+                        // fill, a hairline border and an accent rule on the left. The
+                        // port had a flat grey fill, which is why the sidebar read as
+                        // "nothing is selected" at a glance.
+                        .border_l_2()
+                        .when(*is_active, |el| el.border_color(theme::ACCENT))
+                        .when(!*is_active, |el| {
+                            el.border_color(gpui_kit::rgba(0x00000000))
                         })
-                        .child(*label),
-                )
-                .child(div().text_xs().text_color(theme::FAINT).child(*sub))
-                .into_any_element()
-        }))
+                        .on_hover(cx.listener(move |panel, on, _window, cx| {
+                            panel.set_hover_nav(i, *on, cx);
+                        }))
+                        // Keyboard support: a plain div with on_click is invisible to
+                        // the tab ring and announces nothing to a screen reader.
+                        .track_focus(&focus)
+                        .role(accesskit::Role::Tab)
+                        .focus_visible(|style| {
+                            style.border_color(theme::mix(theme::ACCENT, theme::WHITE, 0.3))
+                        })
+                        .on_key_down(cx.listener(
+                            move |panel, event: &gpui_kit::KeyDownEvent, _window, cx| {
+                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                    panel.set_view(target, cx);
+                                    cx.stop_propagation();
+                                }
+                            },
+                        ))
+                        .on_click(cx.listener(move |panel, _event, _window, cx| {
+                            panel.set_view(target, cx);
+                        }))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(if *is_active {
+                                    theme::ACCENT
+                                } else {
+                                    theme::TEXT
+                                })
+                                .child(*label),
+                        )
+                        .child(div().text_xs().text_color(theme::FAINT).child(*sub))
+                        .into_any_element()
+                }),
+        )
         // the watchdog chip lives in the sidebar footer, like the web panel
         .child(div().flex_1())
         .children(match (panel.watchdog, panel.fan_error.is_some()) {
@@ -156,13 +196,41 @@ fn view_header(view: View) -> gpui_kit::AnyElement {
 }
 
 /// A small mode chip used by the Fans view.
-fn mode_chip(panel: &Panel, mode: FanMode, cx: &GpuiContext<Panel>) -> gpui_kit::AnyElement {
+fn mode_chip(
+    panel: &Panel,
+    index: usize,
+    mode: FanMode,
+    window: &mut Window,
+    cx: &mut GpuiContext<Panel>,
+) -> gpui_kit::AnyElement {
     let active = panel
         .fan
         .as_ref()
         .and_then(|f| FanMode::from_status(&f.mode))
         .map(|m| m == mode)
         .unwrap_or(false);
+    let focus = panel.mode_focus[index].clone();
+    // Same reasoning as the sidebar rows: the border and fill ease toward the
+    // pointer rather than snapping to it.
+    let warmth = motion::hover((index, "mode"), panel.hover_mode == Some(index), window, cx);
+    // Opaque tints, not `rgba(0x00aaff22)`: `mix` forces alpha to 1, so a
+    // translucent accent here would turn the selected chip into a solid blue
+    // slab with its own sub-label unreadable on top of it.
+    let resting = if active {
+        theme::mix(theme::FIELD, theme::ACCENT, 0.16)
+    } else {
+        theme::FIELD
+    };
+    let hovered = if active {
+        theme::mix(theme::FIELD, theme::ACCENT, 0.26)
+    } else {
+        theme::PANEL2
+    };
+    let edge = if active {
+        theme::ACCENT
+    } else {
+        motion::blend(theme::LINE, theme::LINE_STRONG, warmth)
+    };
     div()
         .id(SharedString::from(mode.label()))
         .cursor_pointer()
@@ -173,12 +241,22 @@ fn mode_chip(panel: &Panel, mode: FanMode, cx: &GpuiContext<Panel>) -> gpui_kit:
         .flex()
         .flex_col()
         .gap_0p5()
-        .when(active, |el| {
-            el.border_color(theme::ACCENT)
-                .bg(gpui_kit::rgba(0x00aaff22))
-        })
-        .when(!active, |el| el.border_color(theme::LINE).bg(theme::FIELD))
-        .hover(|el| el.border_color(theme::LINE_STRONG))
+        .border_color(edge)
+        .bg(motion::blend(resting, hovered, warmth))
+        .on_hover(cx.listener(move |panel, on, _window, cx| {
+            panel.set_hover_mode(index, *on, cx);
+        }))
+        .track_focus(&focus)
+        .role(accesskit::Role::RadioButton)
+        .focus_visible(|style| style.border_color(theme::mix(theme::ACCENT, theme::WHITE, 0.3)))
+        .on_key_down(
+            cx.listener(move |panel, event: &gpui_kit::KeyDownEvent, _window, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    panel.fan_action(vec!["mode".into(), mode.as_cli_arg().to_string()], cx);
+                    cx.stop_propagation();
+                }
+            }),
+        )
         .on_click(cx.listener(move |panel, _event, _window, cx| {
             panel.fan_action(vec!["mode".into(), mode.as_cli_arg().to_string()], cx);
         }))
@@ -202,8 +280,17 @@ fn mode_chip(panel: &Panel, mode: FanMode, cx: &GpuiContext<Panel>) -> gpui_kit:
 // Lighting
 // ---------------------------------------------------------------------------
 
-fn lighting(panel: &mut Panel, cx: &mut GpuiContext<Panel>) -> gpui_kit::AnyElement {
+fn lighting(
+    panel: &mut Panel,
+    window: &mut Window,
+    cx: &mut GpuiContext<Panel>,
+) -> gpui_kit::AnyElement {
     let hex_now = theme::hex_of(panel.accent());
+    // The readout is just a word, which reads as static even when the keyboard
+    // is mid-breathe. The web had a pulsing dot next to it; this is that dot,
+    // breathing over `BREATH`. Under reduced motion it samples the end of the
+    // animation instead and sits still, which is the point of it.
+    let live = motion::breath("effect-live", window, cx);
 
     div()
         .flex()
@@ -289,55 +376,77 @@ fn lighting(panel: &mut Panel, cx: &mut GpuiContext<Panel>) -> gpui_kit::AnyElem
             ),
         )
         .child(
-            Section::new("Effects", panel.effect_mode.unwrap_or("static")).child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        Button::new("fx-breathe")
-                            .label("Breathe")
-                            .on_click(cx.listener(|panel, _e, _w, cx| {
+            Section::new("Effects", panel.effect_mode.unwrap_or("static"))
+                .when(panel.effect_mode.is_some(), |el| {
+                    el.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .size(px(7.))
+                                    .rounded_full()
+                                    .bg(theme::OK)
+                                    .opacity(0.35 + 0.65 * live),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme::FAINT)
+                                    .child(format!("{} running", panel.effect_mode.unwrap_or(""))),
+                            ),
+                    )
+                })
+                .child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            Button::new("fx-breathe")
+                                .label("Breathe")
+                                .on_click(cx.listener(|panel, _e, _w, cx| {
+                                    let speed = panel.speed.read(cx).value().start() as u8;
+                                    panel.effect_mode = Some("breathe");
+                                    panel.kbd_action(
+                                        vec![
+                                            "effect".into(),
+                                            "breathe".into(),
+                                            "--speed".into(),
+                                            speed.to_string(),
+                                            "--bg".into(),
+                                        ],
+                                        cx,
+                                    );
+                                })),
+                        )
+                        .child(Button::new("fx-cycle").label("Cycle").on_click(cx.listener(
+                            |panel, _e, _w, cx| {
                                 let speed = panel.speed.read(cx).value().start() as u8;
-                                panel.effect_mode = Some("breathe");
+                                panel.effect_mode = Some("cycle");
                                 panel.kbd_action(
                                     vec![
                                         "effect".into(),
-                                        "breathe".into(),
+                                        "cycle".into(),
                                         "--speed".into(),
                                         speed.to_string(),
                                         "--bg".into(),
                                     ],
                                     cx,
                                 );
-                            })),
-                    )
-                    .child(Button::new("fx-cycle").label("Cycle").on_click(cx.listener(
-                        |panel, _e, _w, cx| {
-                            let speed = panel.speed.read(cx).value().start() as u8;
-                            panel.effect_mode = Some("cycle");
-                            panel.kbd_action(
-                                vec![
-                                    "effect".into(),
-                                    "cycle".into(),
-                                    "--speed".into(),
-                                    speed.to_string(),
-                                    "--bg".into(),
-                                ],
-                                cx,
-                            );
-                        },
-                    )))
-                    .child(Button::new("fx-stop").label("Stop").on_click(cx.listener(
-                        |panel, _e, _w, cx| {
-                            panel.effect_mode = None;
-                            panel.kbd_action(vec!["effect".into(), "stop".into()], cx);
-                        },
-                    )))
-                    .child(div().w_6())
-                    .child(div().text_xs().text_color(theme::FAINT).child("speed"))
-                    .child(slider_inline(&panel.speed, cx)),
-            ),
+                            },
+                        )))
+                        .child(Button::new("fx-stop").label("Stop").on_click(cx.listener(
+                            |panel, _e, _w, cx| {
+                                panel.effect_mode = None;
+                                panel.kbd_action(vec!["effect".into(), "stop".into()], cx);
+                            },
+                        )))
+                        .child(div().w_6())
+                        .child(div().text_xs().text_color(theme::FAINT).child("speed"))
+                        .child(slider_inline(&panel.speed, cx)),
+                ),
         )
         .into_any_element()
 }
@@ -521,7 +630,11 @@ fn fan_unavailable(panel: &Panel, state: &FanState) -> gpui_kit::AnyElement {
         .into_any_element()
 }
 
-fn fans(panel: &mut Panel, cx: &mut GpuiContext<Panel>) -> gpui_kit::AnyElement {
+fn fans(
+    panel: &mut Panel,
+    window: &mut Window,
+    cx: &mut GpuiContext<Panel>,
+) -> gpui_kit::AnyElement {
     let f = match fan_state(panel) {
         FanState::Ready(f) => f,
         state => return fan_unavailable(panel, &state),
@@ -543,7 +656,12 @@ fn fans(panel: &mut Panel, cx: &mut GpuiContext<Panel>) -> gpui_kit::AnyElement 
                     div()
                         .flex()
                         .gap_2()
-                        .children(FanMode::ALL.iter().map(|m| mode_chip(panel, *m, cx))),
+                        .children(
+                    FanMode::ALL
+                        .iter()
+                        .enumerate()
+                        .map(|(i, m)| mode_chip(panel, i, *m, window, cx)),
+                ),
                 )
                 .when(stale, |el| {
                     el.child(
@@ -581,8 +699,10 @@ fn fans(panel: &mut Panel, cx: &mut GpuiContext<Panel>) -> gpui_kit::AnyElement 
                         .flex()
                         .flex_wrap()
                         .gap_6()
-                        .children(f.fans.iter().map(|fan| {
+                        .children(f.fans.iter().enumerate().map(|(i, fan)| {
                             widgets::labeled_gauge(
+                                "fans-duty",
+                                i,
                                 &fan.label,
                                 format!("{}%", fan.duty_pct.unwrap_or(0)),
                                 fan.rpm
@@ -590,6 +710,8 @@ fn fans(panel: &mut Panel, cx: &mut GpuiContext<Panel>) -> gpui_kit::AnyElement 
                                     .unwrap_or_else(|| "stopped".into()),
                                 fan.duty_pct.unwrap_or(0) as f32 / 100.,
                                 theme::ACCENT.into(),
+                                window,
+                                cx,
                             )
                         }))
                         .children(
@@ -598,14 +720,19 @@ fn fans(panel: &mut Panel, cx: &mut GpuiContext<Panel>) -> gpui_kit::AnyElement 
                                 ("GPU", f.gpu_temp_c),
                             ]
                             .iter()
-                            .filter_map(|(label, temp)| {
+                            .enumerate()
+                            .filter_map(|(i, (label, temp))| {
                                 temp.map(|t| {
                                     widgets::labeled_gauge(
+                                        "fans-temp",
+                                        i,
                                         label,
                                         format!("{t} °C"),
                                         format!("ceiling {} °C", f.ceiling_c as i32),
                                         t as f32 / f.ceiling_c as f32,
                                         widgets::temp_color(t),
+                                        window,
+                                        cx,
                                     )
                                 })
                             }),
@@ -780,23 +907,45 @@ fn input_compact(state: &gpui_kit::Entity<InputState>) -> gpui_kit::AnyElement {
 use gpui_kit::{Render, Window as GpuiWindow};
 
 impl Render for Panel {
-    fn render(&mut self, _window: &mut GpuiWindow, cx: &mut GpuiContext<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut GpuiWindow, cx: &mut GpuiContext<Self>) -> impl IntoElement {
         let view = self.view;
+        // The web changed pages instantly; this fades the column in over
+        // `SWITCH` instead, keyed on the view generation so returning to a view
+        // replays it.
+        let fade = motion::fade(self.view_seq, window, cx);
 
         let content = match view {
-            View::Home => home(self),
-            View::Lighting => lighting(self, cx),
+            View::Home => home(self, window, cx),
+            View::Lighting => lighting(self, window, cx),
             View::Profiles => profiles(self, cx),
-            View::Fans => fans(self, cx),
+            View::Fans => fans(self, window, cx),
         };
 
         div()
+            .id("panel-root")
             .flex()
             .size_full()
             .bg(theme::BG)
             .text_color(theme::TEXT)
             .font(theme::ui_font())
-            .child(sidebar(self, cx))
+            // Tab traversal. GPUI keeps the tab ring in the window and hands it
+            // out one stop at a time, so this just has to ask for the next one;
+            // the root listens on the bubble phase, which means every control
+            // inside it can drive it.
+            .on_key_down(
+                cx.listener(|_panel, event: &gpui_kit::KeyDownEvent, window, cx| {
+                    if event.keystroke.key.as_str() != "tab" {
+                        return;
+                    }
+                    if event.keystroke.modifiers.shift {
+                        window.focus_prev(cx);
+                    } else {
+                        window.focus_next(cx);
+                    }
+                    cx.stop_propagation();
+                }),
+            )
+            .child(sidebar(self, window, cx))
             .child(
                 div().flex_1().h_full().overflow_y_scrollbar().child(
                     div()
@@ -804,6 +953,9 @@ impl Render for Panel {
                         .flex_col()
                         .p_6()
                         .gap_4()
+                        // Not fully transparent at 0: the first frame after a
+                        // switch would otherwise be a blank pane.
+                        .opacity(0.25 + 0.75 * fade)
                         // `max_w` alone let wide children (the gauge row, the
                         // curve help text) push the column past the window and
                         // get clipped. `w_full` pins it to the pane first, and
@@ -825,7 +977,7 @@ impl Render for Panel {
 // Home
 // ---------------------------------------------------------------------------
 
-fn home(panel: &Panel) -> gpui_kit::AnyElement {
+fn home(panel: &Panel, window: &mut Window, cx: &mut GpuiContext<Panel>) -> gpui_kit::AnyElement {
     div()
         .flex()
         .flex_col()
@@ -890,8 +1042,10 @@ fn home(panel: &Panel) -> gpui_kit::AnyElement {
                     .flex()
                     .flex_wrap()
                     .gap_6()
-                    .children(f.fans.iter().map(|fan| {
+                    .children(f.fans.iter().enumerate().map(|(i, fan)| {
                         widgets::labeled_gauge(
+                            "home-duty",
+                            i,
                             &fan.label,
                             format!("{}%", fan.duty_pct.unwrap_or(0)),
                             fan.rpm
@@ -899,19 +1053,26 @@ fn home(panel: &Panel) -> gpui_kit::AnyElement {
                                 .unwrap_or_else(|| "stopped".into()),
                             fan.duty_pct.unwrap_or(0) as f32 / 100.,
                             theme::ACCENT.into(),
+                            window,
+                            cx,
                         )
                     }))
                     .children(
                         [("CPU", f.cpu_temp_c), ("GPU", f.gpu_temp_c)]
                             .iter()
-                            .filter_map(|(label, temp)| {
+                            .enumerate()
+                            .filter_map(|(i, (label, temp))| {
                                 temp.map(|t| {
                                     widgets::labeled_gauge(
+                                        "home-temp",
+                                        i,
                                         label,
                                         format!("{t} °C"),
                                         format!("ceiling {} °C", f.ceiling_c as i32),
                                         t as f32 / f.ceiling_c as f32,
                                         widgets::temp_color(t),
+                                        window,
+                                        cx,
                                     )
                                 })
                             }),
