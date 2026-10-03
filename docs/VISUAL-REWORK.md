@@ -1,11 +1,31 @@
 # Visual rework — the GPUI panel
 
 Plan for making `g5kbd-gui` look like a finished product instead of a
-functional port. Written 2026-10-03, before any code change. Nothing here has
-been implemented yet; this document exists so the work does not have to be
-rediscovered and so the decisions are recorded.
+functional port, plus the record of what has actually landed.
 
 Scope: **`gui/` only**. No kernel, CLI, backend or packaging changes.
+
+## Where this was left (2026-10-03)
+
+Read **§10** for the full record; this is the short version.
+
+Committed and green — `cargo fmt --check`, `clippy --all-targets -D warnings`,
+14 unit tests, 11 snapshot tests, `cargo build --frozen --release`:
+
+| Commit | What it did |
+|---|---|
+| `5583d5e` | Four visual defects found by rendering the panel offscreen |
+| `751395f` | Resolve fonts at runtime instead of hard-coding an absent family |
+| `7345f34` | Bundle IBM Plex; stop reporting "loading" as "missing" |
+| `dee9039` | Keyboard operation (accesskit roles, focus ring, tab order) and motion |
+| `0635653` | **Responsive layout.** `layout::Breakpoint` from the window width: a 64 px icon rail under 800 px, two lanes and a capped, centred column from 1180 px |
+| `7d5c1f8` | **Hierarchy and instruments.** A five-step type scale, card labels and hairlines, a status strip beside the title, duty as an arc, temperature with a tick, sparklines fed by a rolling history |
+
+**Uncommitted and unfinished:** the fan curve as a graph (Phase 8). Two files,
+`gui/src/panel.rs` and `gui/src/widgets.rs`, and the tree does not build. The
+clamping, the drag state and the canvas graph are written and unit-tested; three
+compile errors and the wiring into the view are not done. §10's "Phase 8"
+section lists them one by one.
 
 ---
 
@@ -23,7 +43,7 @@ the source, not from seeing the app.
 > **Superseded by §10.** The panel has now been rendered and looked at, and
 > §2's three causes turned out to be one wrong number, one missing shadow and
 > one missing theme pin. The phases below are still the plan; §10 records what
-> has actually landed.
+> has actually landed, and where the work was left.
 
 Files that own the look:
 
@@ -282,6 +302,13 @@ them, because everything else consumes the tokens.
 
 ## 10. Status — the panel has been looked at
 
+> **Read this first if you are picking the work up cold.** The whole of §10 is
+> what has actually landed, in the order it landed. The newest work is at the
+> bottom: Phase 7 (layout, hierarchy, status, gauges) is done and committed;
+> Phase 8 (the fan curve as a graph) is half-written and **the working tree does
+> not compile** because of it — see "Phase 8" below, which lists the three
+> errors and the rest of the work in order.
+
 The snapshot harness (§8) renders the real `Panel` at its real window size, so
 the diagnosis above could be checked instead of guessed. It found four concrete
 defects, three of them objective bugs rather than taste:
@@ -508,11 +535,87 @@ intrinsic size:
 Done when `cargo test --test snapshot the_gauges_draw_their_trend` writes
 `gauges-trend.png` with a visible trace under each value.
 
+### Phase 8 — the fan curve as a graph (STARTED, NOT FINISHED)
+
+**The working tree does not compile.** `gui/src/panel.rs` and
+`gui/src/widgets.rs` hold uncommitted work-in-progress for this phase; the last
+commit that builds is `7d5c1f8`. Everything above this section is committed and
+green. To get back to a building tree without losing the work:
+
+```sh
+git stash push -m "wip: curve graph"   # work is kept, tree builds again
+git stash pop                          # and back again
+```
+
+What the phase is for: the fan curve is currently ten sliders in two rows of
+five. A curve is a shape, and it should be drawn as one — five draggable
+points on a temperature/duty graph, with the area under it shaded because that
+area is literally what the daemon will ask of the fans.
+
+What is already written:
+
+- `panel::clamp_curve_point` (free function, `panel.rs`) clamps a proposed
+  point so the curve still passes `curve::curve_problem`: temperatures strictly
+  rise, duty never falls as it heats. Dragging a point into its neighbour stops
+  one degree short instead of crossing.
+- `Panel::move_curve_point` / `begin_curve_drag` / `end_curve_drag`, and the
+  `curve_drag` field. `move_curve_point` also writes the two sliders for that
+  point so the keyboard path and the graph cannot disagree.
+- Four unit tests over `clamp_curve_point`, including one that drags every point
+  hard in four directions and asserts `curve_problem` is still `None`.
+- `widgets::curve_graph`, `disc`, `point_at`, `draw_curve`: the canvas graph
+  with grid lines, the shaded area, the curve, the five handles and the
+  hit-testing that maps a pointer position back to a temperature and a duty.
+  The canvas records its own bounds in prepaint and the mouse handlers read
+  them back — the cheapest way to get a pointer position into curve units.
+
+What is left, in order:
+
+1. **Make it compile.** Three known errors, all from the same edit:
+   - `widgets.rs`: `crate::Context` does not exist — it is `gpui_kit::Context`.
+   - `panel.rs`: `clamp_curve_point` landed *inside* `impl Panel`; move the
+     function (and its doc comment) above the `impl` block. `move_curve_point`
+     then resolves.
+   - `widgets.rs`: `.cursor()` takes a `CursorStyle`, not a colour. Drop it or
+     pass `gpui_kit::CursorStyle::ResizeHorizontal` / a pointer variant.
+2. **Put the graph in the view.** `curve_editor` in `views.rs` should render
+   `widgets::curve_graph(panel, window, cx)` above the sliders, and the sliders
+   stay underneath as the keyboard path. Do not delete the sliders: a canvas
+   has no place in the tab ring.
+3. **Check it.** `cargo test --test snapshot renders_every_view` writes
+   `fans.png`; the graph should appear above the sliders. Add a snapshot test
+   that drags a point (`gpui_kit::test::TestWindowExt` has `mouse_move`/
+   `mouse_down`-style helpers — check what the harness exposes before assuming)
+   and asserts `panel.curve` moved and stayed legal.
+4. **PKGBUILD and docs.** No new files yet, so `PKGBUILD` is still balanced at
+   36 sources / 36 sums. If the graph ends up in its own module, add it there.
+
 ### Still open
 
+- **Phase 8, the fan curve as a graph** — written, not finished, and the only
+  thing currently breaking the build. See the section above.
 - The contrast pass on the 8 px keycap legends and the 9–10.5 px uppercase
   labels: it needs measurement against the rendered PNGs rather than an
-  opinion.
-- The fan curve is still ten sliders rather than a graph.
+  opinion. The type scale reduced how much 12 px text there is, but the keycap
+  legends are still 9 px.
 - The keyboard preview on the Lighting view is a bare well with no card header,
   unlike every other block on the screen.
+- Nothing has been checked against the real hardware yet: every snapshot in
+  `gui/target/snapshots` is either the live cached fan snapshot or the honest
+  "unavailable" state. The gauges' sparklines only fill in over two and a half
+  minutes of uptime, and `Panel::seed_history` fakes that for the snapshots —
+  nobody has watched the real one fill.
+
+### How to check any of this yourself
+
+```sh
+cd gui
+cargo test --test snapshot -- --nocapture   # writes gui/target/snapshots/*.png
+cargo run                                   # the real window
+```
+
+The snapshots are meant to be looked at, not asserted against: pinning pixels
+breaks on every font or theme change, which is exactly what this work changes.
+`gui/tools/measure.py` prints where the cards actually sit in a snapshot, in
+logical pixels, which is how the two-lane ratio was checked to be 2:1 rather
+than eyeballed.
