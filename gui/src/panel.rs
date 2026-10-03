@@ -106,6 +106,22 @@ pub struct Panel {
 
 impl Panel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut panel = Self::build(window, cx, View::Home);
+        panel.wire_sliders(cx);
+        panel.start_loops(cx);
+        panel.refresh_profiles(cx);
+        panel
+    }
+
+    /// Same panel, pinned to `view` and without the polling loops or the
+    /// profile fetch. `tests/snapshot.rs` uses this to render one view to a
+    /// PNG: a background loop would keep the headless test dispatcher busy and
+    /// the profile fetch would race the first frame.
+    pub fn new_for_snapshot(window: &mut Window, cx: &mut Context<Self>, view: View) -> Self {
+        Self::build(window, cx, view)
+    }
+
+    fn build(window: &mut Window, cx: &mut Context<Self>, view: View) -> Self {
         // Both reads are plain file/process access, done once synchronously so
         // the sliders can be seeded with the real values. The startup cost is
         // one `g5fan status --cached` (~30 ms); the keyboard read is file I/O.
@@ -154,8 +170,8 @@ impl Panel {
             cx,
         );
 
-        let mut panel = Panel {
-            view: View::Home,
+        Panel {
+            view,
             kbd,
             brightness,
             ch_red,
@@ -178,12 +194,7 @@ impl Panel {
             subs: Vec::new(),
             err: None,
             busy: false,
-        };
-
-        panel.wire_sliders(cx);
-        panel.start_loops(cx);
-        panel.refresh_profiles(cx);
-        panel
+        }
     }
 
     // -- slider wiring --------------------------------------------------------

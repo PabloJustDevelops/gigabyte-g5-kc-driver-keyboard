@@ -4,8 +4,8 @@
 // widgets (Button, Slider, Switch, Input, Toggle) cover the rest.
 
 use gpui_kit::{
-    AnyElement, Hsla, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, div,
-    px, relative,
+    AnyElement, BoxShadow, Hsla, IntoElement, ParentElement, RenderOnce, SharedString, Styled,
+    Window, div, px, relative,
 };
 
 use crate::theme::{self, mix};
@@ -113,7 +113,7 @@ pub fn labeled_gauge(
         .flex()
         .flex_col()
         .gap_1()
-        .min_w(px(180.))
+        .min_w(px(148.))
         .flex_1()
         .child(
             div()
@@ -273,41 +273,73 @@ pub const KB_ROWS: &[&[KeyDef]] = &[
 /// The keyboard as a keycap grid, tinted toward the live LED colour.
 pub fn keyboard_preview(accent: gpui_kit::Rgba, glow: f32, on: bool) -> AnyElement {
     let glow = if on { glow.clamp(0., 1.) } else { 0. };
-    let body = glow_mix(theme::PANEL2, accent, 0.45 * glow);
-    let edge = glow_mix(theme::LINE, accent, 0.6 * glow);
-    let legend = glow_mix(theme::MUTED, accent, 0.5 * glow);
+
+    // Ratios come from the web panel's styles.css: the face takes 26% of the
+    // LED colour, the border 45%, and the legend brightens towards white. The
+    // port used 45% on the face, which turned a white keyboard into a flat
+    // grey slab — the single most visible regression in the rewrite.
+    let body = glow_mix(theme::PANEL2, accent, 0.26 * glow);
+    let edge = glow_mix(theme::LINE, accent, 0.45 * glow);
+    let legend = glow_mix(theme::MUTED, theme::WHITE, 0.55 * glow);
+
+    // `inset 0 1px 0 rgba(255,255,255,0.05)`: the highlight along the top of a
+    // keycap that makes it read as a raised key instead of a flat swatch.
+    let highlight = BoxShadow::new(px(0.), px(1.), theme::hsla(theme::WHITE, 0.05)).inset();
 
     div()
         .rounded_md()
         .border_1()
         .border_color(theme::LINE)
+        // `inset 0 2px 14px rgba(0,0,0,0.55)`: the recessed well the keys sit in.
+        .shadow(vec![
+            BoxShadow::new(px(0.), px(2.), theme::hsla(theme::BLACK, 0.55))
+                .blur_radius(px(14.))
+                .inset(),
+        ])
         .bg(theme::FIELD)
         .p_3()
         .flex()
         .flex_col()
         .gap_1()
         .children(KB_ROWS.iter().map(|row| {
-            let total: f32 = row.iter().map(|k| k.u).sum();
             div()
                 .flex()
                 .gap_1()
                 .children(row.iter().map(|k| {
+                    // flex_grow, not a percentage width: percentages are computed
+                    // against the row before the gaps are added, so a 16-key row
+                    // overflowed its card by the width of all its gaps.
+                    let span = || div().flex_grow(k.u).flex_basis(px(0.));
                     if k.gap {
-                        return div().w(relative(k.u / total)).into_any_element();
+                        return span().into_any_element();
                     }
-                    div()
-                        .w(relative(k.u / total))
+                    // The web panel glowed with `0 0 calc(3px + p*12px)
+                    // calc(p*1.5px)`, but that was drawn under a much darker
+                    // keycap. At this face ratio the same radius reads as a fog
+                    // over the whole board, so it is halved.
+                    let glow_shadow = (glow > 0.01).then(|| {
+                        BoxShadow::new(px(0.), px(0.), theme::hsla(accent, 0.42 * glow))
+                            .blur_radius(px(2. + 6. * glow))
+                            .spread_radius(px(1.5 * glow))
+                    });
+
+                    let mut key = span()
                         .h(px(26.))
                         .rounded_xs()
                         .border_1()
                         .border_color(edge)
                         .bg(body)
-                        .flex()
+                        .shadow(vec![highlight.clone()]);
+                    if let Some(glow_shadow) = glow_shadow {
+                        key = key.shadow(vec![highlight.clone(), glow_shadow]);
+                    }
+
+                    key.flex()
                         .items_center()
                         .justify_center()
                         .child(
                             div()
-                                .text_size(px(8.))
+                                .text_size(px(9.))
                                 .text_color(legend)
                                 .child(k.label.to_string()),
                         )

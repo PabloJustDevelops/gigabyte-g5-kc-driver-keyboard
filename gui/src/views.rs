@@ -72,7 +72,18 @@ fn sidebar(panel: &mut Panel, cx: &mut GpuiContext<Panel>) -> gpui_kit::AnyEleme
                 .cursor_pointer()
                 .flex()
                 .flex_col()
-                .when(*is_active, |el| el.bg(theme::PANEL2))
+                // The web panel marked the active row with an accent-tinted
+                // fill, a hairline border and an accent rule on the left. The
+                // port had a flat grey fill, which is why the sidebar read as
+                // "nothing is selected" at a glance.
+                .border_l_2()
+                .when(*is_active, |el| {
+                    el.bg(theme::mix(theme::PANEL2, theme::ACCENT, 0.14))
+                        .border_color(theme::ACCENT)
+                })
+                .when(!*is_active, |el| {
+                    el.border_color(gpui_kit::rgba(0x00000000))
+                })
                 .hover(|el| el.bg(theme::PANEL))
                 .on_click(cx.listener(move |panel, _event, _window, cx| {
                     panel.view = target;
@@ -537,6 +548,7 @@ fn fans(panel: &mut Panel, cx: &mut GpuiContext<Panel>) -> gpui_kit::AnyElement 
                 .child(
                     div()
                         .flex()
+                        .flex_wrap()
                         .gap_6()
                         .children(f.fans.iter().map(|fan| {
                             widgets::labeled_gauge(
@@ -626,15 +638,16 @@ fn curve_editor(
     )
     .child(
         div()
+            .w_full()
             .text_xs()
             .text_color(theme::FAINT)
             .child("the daemon turns this ramp into duty: at or below T1 the fans hold D1, at or above T5 they hold D5, and between points the duty is interpolated. Duty must never fall as it gets hotter."),
-    )
-    .child(
-        div()
-            .flex()
-            .gap_4()
-            .children((0..5).map(|i| {
+    ).child(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap_4()
+                .children((0..5).map(|i| {
                 div()
                     .flex()
                     .flex_col()
@@ -760,7 +773,12 @@ impl Render for Panel {
                         .flex_col()
                         .p_6()
                         .gap_4()
-                        .max_w(px(980.))
+                        // `max_w` alone let wide children (the gauge row, the
+                        // curve help text) push the column past the window and
+                        // get clipped. `w_full` pins it to the pane first, and
+                        // `max_w` keeps the Overview column readable.
+                        .w_full()
+                        .max_w(px(940.))
                         .child(view_header(view))
                         .child(error_banner(self))
                         .when(self.busy, |el| {
@@ -834,6 +852,7 @@ fn home(panel: &Panel) -> gpui_kit::AnyElement {
             .child(match &panel.fan {
                 Some(f) => div()
                     .flex()
+                    .flex_wrap()
                     .gap_6()
                     .children(f.fans.iter().map(|fan| {
                         widgets::labeled_gauge(

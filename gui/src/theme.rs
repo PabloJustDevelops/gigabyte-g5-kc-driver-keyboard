@@ -29,6 +29,15 @@ pub const WARN: Rgba = rgb(0xffb454);
 pub const DANGER: Rgba = rgb(0xff5c6c);
 /// Resting accent (the LED default); the live accent follows the glow.
 pub const ACCENT: Rgba = rgb(0x00aaff);
+pub const WHITE: Rgba = rgb(0xffffff);
+pub const BLACK: Rgba = rgb(0x000000);
+
+/// An `Hsla` for shadows and glows, which is what `BoxShadow` takes. The
+/// shadows are the port of the web panel's `box-shadow` rules, so they belong
+/// next to the palette rather than inlined at each call site.
+pub fn hsla(c: Rgba, a: f32) -> gpui_kit::Hsla {
+    gpui_kit::hsla(c.r, c.g, c.b, a.clamp(0., 1.))
+}
 
 /// Mix two colours by `t` (0 = a, 1 = b). Used to tint keycaps with the glow.
 pub fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
@@ -49,6 +58,38 @@ pub fn parse_hex(text: &str) -> Option<Rgba> {
     }
     let v = u32::from_str_radix(hex, 16).ok()?;
     Some(gpui_kit::rgb(v))
+}
+
+/// Pin the component library's theme to ours.
+///
+/// The kit ships its own palette (`gpui_component::theme`) and renders every
+/// `Button`, `Slider` and `Input` from it. Left alone it follows the desktop's
+/// light/dark setting, which on a light-themed desktop painted white buttons
+/// inside our dark cards. We also repaint its slider track: the default is a
+/// near-white bar that, at full width, is the loudest thing on the screen.
+///
+/// `main.rs` calls this once at startup; `tests/snapshot.rs` calls it too, so
+/// snapshots match what ships.
+pub fn apply_kit_theme(cx: &mut gpui_kit::App) {
+    use gpui_kit::component::theme::{Theme, ThemeMode};
+
+    Theme::change(ThemeMode::Dark, None, cx);
+    // `slider_bar` is the *filled* part of the track, not the groove. Its dark
+    // default is near-white, which turned every slider into a bright bar and
+    // made the loudest thing on the Lighting view a 3 px line. The groove
+    // already reads correctly; the fill should be the accent.
+    let fill: gpui_kit::Hsla = ACCENT.into();
+    let thumb: gpui_kit::Hsla = WHITE.into();
+    Theme::update(cx, |theme| {
+        theme.colors.slider_bar = fill;
+        theme.colors.slider_thumb = thumb;
+    });
+}
+
+/// Darken towards black — the web panel's `brightness(0.5)` off state, which
+/// greyed the whole board instead of only zeroing the glow.
+pub fn dim(c: Rgba, t: f32) -> Rgba {
+    mix(c, BLACK, t)
 }
 
 pub fn hex_of(c: Rgba) -> String {

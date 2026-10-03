@@ -13,15 +13,9 @@
 // and pins the matching gpui-pre-* snapshot crates, so this file needs no
 // direct `gpui` dependency.
 
-mod backend;
-mod panel;
-mod theme;
-mod views;
-mod widgets;
-
 use gpui_kit::{App, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 
-use panel::{Panel, View};
+use g5kbd_gui::panel::{Panel, View};
 
 fn main() {
     // `gpui_kit::application()` opens the platform backend (Wayland/X11 on
@@ -30,6 +24,12 @@ fn main() {
     // is what makes dialogs/tooltips work inside the window.
     gpui_kit::application().run(|cx: &mut App| {
         gpui_kit::init(cx);
+
+        // `gui/src/theme.rs` is a fixed dark palette, so the component widgets
+        // have to follow it instead of the desktop's light mode. Left alone,
+        // the kit follows the system appearance and a light-themed desktop
+        // renders white buttons inside our dark cards.
+        g5kbd_gui::theme::apply_kit_theme(cx);
 
         let bounds = Bounds::centered(None, size(px(1040.), px(680.)), cx);
         gpui_kit::open_window(
