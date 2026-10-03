@@ -124,7 +124,8 @@ fn sidebar(
                 .when(labelled, |el| el.px_2().pb_3())
                 .child(
                     div()
-                        .text_sm()
+                        .text_size(px(15.))
+                        .line_height(px(18.))
                         .font_weight(gpui_kit::FontWeight::BOLD)
                         .text_color(theme::TEXT)
                         // The wordmark is the first thing to go: at 64 px it
@@ -140,12 +141,7 @@ fn sidebar(
                         }),
                 )
                 .when(labelled, |el| {
-                    el.child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::FAINT)
-                            .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
-                    )
+                    el.child(widgets::meta(format!("v{}", env!("CARGO_PKG_VERSION"))))
                 }),
         )
         .children(
@@ -244,7 +240,13 @@ fn sidebar(
                                 .when(labelled, |el| {
                                     el.child(
                                         div()
-                                            .text_sm()
+                                            .text_size(px(14.))
+                                            .line_height(px(18.))
+                                            .font_weight(if *is_active {
+                                                gpui_kit::FontWeight::BOLD
+                                            } else {
+                                                gpui_kit::FontWeight::NORMAL
+                                            })
                                             .text_color(if *is_active {
                                                 theme::ACCENT
                                             } else {
@@ -254,42 +256,14 @@ fn sidebar(
                                     )
                                 }),
                         )
-                        .when(labelled, |el| {
-                            el.child(div().text_xs().text_color(theme::FAINT).child(*sub))
-                        })
+                        .when(labelled, |el| el.child(widgets::meta(*sub)))
                         .into_any_element()
                 }),
         )
-        // the watchdog chip lives in the sidebar footer, like the web panel
+        // The daemon status moved up to the header strip: in the footer it was
+        // the one thing on screen nobody looked at, and it disappeared entirely
+        // whenever the sidebar collapsed to its icon rail.
         .child(div().flex_1())
-        .children(match (panel.watchdog, panel.fan_error.is_some()) {
-            (Some(true), _) => Some(
-                div()
-                    .text_xs()
-                    .text_color(theme::OK)
-                    .when(labelled, |el| el.px_2().child("daemon on"))
-                    // Collapsed there is no room for the word, so the status
-                    // becomes the breathing dot the sidebar already uses
-                    // elsewhere. It is the same signal in less space.
-                    .when(!labelled, |el| {
-                        el.flex()
-                            .justify_center()
-                            .child(div().size(px(7.)).rounded_full().bg(theme::OK))
-                    }),
-            ),
-            (Some(false), _) => Some(
-                div()
-                    .text_xs()
-                    .text_color(theme::WARN)
-                    .when(labelled, |el| el.px_2().child("daemon off"))
-                    .when(!labelled, |el| {
-                        el.flex()
-                            .justify_center()
-                            .child(div().size(px(7.)).rounded_full().bg(theme::WARN))
-                    }),
-            ),
-            _ => None,
-        })
         .into_any_element()
 }
 
@@ -308,30 +282,94 @@ fn error_banner(panel: &Panel) -> gpui_kit::AnyElement {
             .bg(theme::mix(theme::PANEL, theme::DANGER, 0.12))
             .px_3()
             .py_2()
-            .text_sm()
+            .text_size(px(13.))
+            .line_height(px(18.))
             .text_color(theme::DANGER)
             .child(text.to_string())
             .into_any_element(),
     }
 }
 
-fn view_header(view: View) -> gpui_kit::AnyElement {
+/// One status item: a dot and a word. `pulse` is the breathing sample; a status
+/// that is alive gets it and a static one does not.
+fn status_item(pulse: f32) -> impl Fn(gpui_kit::Rgba, SharedString, bool) -> gpui_kit::Div {
+    move |dot, text, still| {
+        div()
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .child(
+                div()
+                    .size(px(6.))
+                    .rounded_full()
+                    .bg(dot)
+                    .when(still, |el| el.opacity(0.55))
+                    .when(!still, |el| el.opacity(0.45 + 0.55 * pulse)),
+            )
+            .child(widgets::meta(text))
+    }
+}
+
+/// The header strip above every view: what this page is on the left, what the
+/// panel is talking to on the right.
+///
+/// The daemon status used to be a word in the sidebar footer, which is the one
+/// place it is never looked at and the only place it disappears entirely when
+/// the sidebar collapses. Status belongs next to the title, in the same row the
+/// eye already crosses.
+fn view_header(
+    panel: &Panel,
+    layout: Breakpoint,
+    view: View,
+    window: &mut Window,
+    cx: &mut GpuiContext<Panel>,
+) -> gpui_kit::AnyElement {
+    // The daemon dot breathes like the effect dot does: a status that is alive
+    // should not look like a label.
+    let live = motion::breath("daemon-live", window, cx);
+
+    let status = status_item(live);
+
     div()
+        .w_full()
         .flex()
-        .flex_col()
-        .gap_0p5()
+        .flex_wrap()
+        .justify_between()
+        .items_baseline()
+        .gap_3()
+        .pb_4()
+        .border_b_1()
+        .border_color(theme::LINE)
         .child(
             div()
-                .text_xl()
-                .font_weight(gpui_kit::FontWeight::BOLD)
-                .text_color(theme::TEXT)
-                .child(view.title()),
+                .flex()
+                .flex_col()
+                .gap_0p5()
+                .child(widgets::title(view.title()))
+                .child(widgets::meta(view.subtitle())),
         )
         .child(
             div()
-                .text_sm()
-                .text_color(theme::FAINT)
-                .child(view.subtitle()),
+                .flex()
+                .items_center()
+                .gap_4()
+                // On a narrow window the status row would push the title into
+                // an ellipsis, so it wraps under it instead.
+                .when(layout == Breakpoint::Compact, |el| el.w_full().pt_1())
+                .child(match panel.watchdog {
+                    Some(true) => status(theme::OK, "fan daemon".into(), false),
+                    Some(false) => status(theme::WARN, "fan daemon".into(), true),
+                    None => widgets::meta("fan daemon …"),
+                })
+                .child(status(
+                    theme::MUTED,
+                    match panel.kbd.backend.as_str() {
+                        "" => SharedString::from("backend"),
+                        other => SharedString::from(other.to_string()),
+                    },
+                    true,
+                ))
+                .child(widgets::meta(format!("v{}", env!("CARGO_PKG_VERSION")))),
         )
         .into_any_element()
 }
@@ -403,11 +441,17 @@ fn mode_chip(
         }))
         .child(
             div()
-                .text_sm()
+                .text_size(px(14.))
+                .line_height(px(18.))
+                .font_weight(if active {
+                    gpui_kit::FontWeight::BOLD
+                } else {
+                    gpui_kit::FontWeight::NORMAL
+                })
                 .text_color(if active { theme::ACCENT } else { theme::TEXT })
                 .child(mode.label()),
         )
-        .child(div().text_xs().text_color(theme::FAINT).child(match mode {
+        .child(widgets::meta(match mode {
             FanMode::Auto => "firmware curve",
             FanMode::Turbo => "full speed",
             FanMode::Silent => "quiet curve",
@@ -528,12 +572,10 @@ fn lighting(
                                     .bg(theme::OK)
                                     .opacity(0.35 + 0.65 * live),
                             )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(theme::FAINT)
-                                    .child(format!("{} running", panel.effect_mode.unwrap_or(""))),
-                            ),
+                            .child(widgets::meta(format!(
+                                "{} running",
+                                panel.effect_mode.unwrap_or("")
+                            ))),
                     )
                 })
                 .child(
@@ -583,7 +625,7 @@ fn lighting(
                             },
                         )))
                         .child(div().w_2())
-                        .child(div().text_xs().text_color(theme::FAINT).child("speed"))
+                        .child(widgets::meta("speed"))
                         .child(slider_inline(&panel.speed, cx)),
                 )
                 .into_any_element(),
@@ -648,13 +690,7 @@ fn profiles(
                 SharedString::from(format!("{} profiles", rows.len())),
             )
             .children(if rows.is_empty() {
-                vec![
-                    div()
-                        .text_sm()
-                        .text_color(theme::FAINT)
-                        .child("nothing saved yet")
-                        .into_any_element(),
-                ]
+                vec![widgets::meta("nothing saved yet").into_any_element()]
             } else {
                 rows.iter()
                     .map(|(name, label)| {
@@ -676,16 +712,12 @@ fn profiles(
                                     .gap_3()
                                     .child(
                                         div()
-                                            .text_sm()
+                                            .text_size(px(14.))
+                                            .line_height(px(18.))
                                             .text_color(theme::TEXT)
                                             .child(name.to_string()),
                                     )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(theme::FAINT)
-                                            .child(label.to_string()),
-                                    ),
+                                    .child(widgets::meta(label.to_string())),
                             )
                             .child(
                                 div()
@@ -774,10 +806,7 @@ fn fan_unavailable(panel: &Panel, state: &FanState) -> gpui_kit::AnyElement {
         .flex_col()
         .gap_4()
         .child(error_banner(panel))
-        .child(
-            Section::new("Fans", readout)
-                .child(div().text_sm().text_color(theme::FAINT).child(message)),
-        )
+        .child(Section::new("Fans", readout).child(widgets::meta(message)))
         .into_any_element()
 }
 
@@ -822,7 +851,8 @@ fn fans(
                             .bg(theme::mix(theme::PANEL, theme::WARN, 0.12))
                             .px_3()
                             .py_2()
-                            .text_sm()
+                            .text_size(px(13.))
+                            .line_height(px(18.))
                             .text_color(theme::WARN)
                             .child(format!(
                                 "the fan daemon is not running — values are {} s old and nothing is evaluating curves. Start it with: sudo systemctl start g5fan-watchdog.service",
@@ -831,19 +861,14 @@ fn fans(
                     )
                 })
                 .when(curve_mode, |el| {
-                    el.child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::FAINT)
-                            .child(format!(
-                                "driven by the daemon every 5 s · releases both fans to the firmware curve at {} °C",
-                                f.ceiling_c as i32
-                            )),
-                    )
+                    el.child(widgets::meta(format!(
+                        "driven by the daemon every 5 s · releases both fans to the firmware curve at {} °C",
+                        f.ceiling_c as i32
+                    )))
                 })
                 .into_any_element(),
             Section::new("Fans", SharedString::from(format!("ceiling {} °C", f.ceiling_c as i32)))
-                .child(gauge_grid(&f, "fans", layout, window, cx))
+                .child(gauge_grid(panel, &f, "fans", layout, window, cx))
                 .into_any_element(),
         ],
         vec![
@@ -887,6 +912,7 @@ fn fans(
 /// snapshot has to read the same way on both, or the user has to learn the
 /// layout twice.
 fn gauge_grid(
+    panel: &Panel,
     f: &backend::fan::RawFanStatus,
     channel: &'static str,
     layout: Breakpoint,
@@ -899,19 +925,15 @@ fn gauge_grid(
         .flex_wrap()
         .gap_6()
         .children(f.fans.iter().enumerate().map(|(i, fan)| {
-            widgets::labeled_gauge(
+            widgets::duty_gauge(
                 channel,
                 i,
                 &fan.label,
-                format!("{}%", fan.duty_pct.unwrap_or(0)),
-                fan.rpm
-                    .map(|rpm| format!("{rpm} rpm"))
-                    .unwrap_or_else(|| "stopped".into()),
-                fan.duty_pct.unwrap_or(0) as f32 / 100.,
-                theme::ACCENT.into(),
+                fan.duty_pct,
+                fan.rpm,
+                &panel.history.rpm(i),
+                theme::ACCENT,
                 min_w,
-                window,
-                cx,
             )
         }))
         .children(
@@ -920,15 +942,15 @@ fn gauge_grid(
                 .enumerate()
                 .filter_map(|(i, (label, temp))| {
                     temp.map(|t| {
-                        widgets::labeled_gauge(
+                        widgets::temp_gauge(
                             channel,
-                            // Offset past the fans so the two never share a bar
-                            // id inside one view.
+                            // Offset past the fans so the two never share a
+                            // bar id inside one view.
                             100 + i,
                             label,
-                            format!("{t} °C"),
-                            format!("ceiling {} °C", f.ceiling_c as i32),
-                            t as f32 / f.ceiling_c as f32,
+                            t,
+                            f.ceiling_c as i32,
+                            &panel.history.temp(i),
                             widgets::temp_color(t),
                             min_w,
                             window,
@@ -963,12 +985,9 @@ fn curve_editor(
         }),
     )
     .child(
-        div()
-            .w_full()
-            .text_xs()
-            .text_color(theme::FAINT)
-            .child("the daemon turns this ramp into duty: at or below T1 the fans hold D1, at or above T5 they hold D5, and between points the duty is interpolated. Duty must never fall as it gets hotter."),
-    ).child(
+        widgets::body("the daemon turns this ramp into duty: at or below T1 the fans hold D1, at or above T5 they hold D5, and between points the duty is interpolated. Duty must never fall as it gets hotter.")
+    )
+    .child(
             div()
                 .flex()
                 .flex_wrap()
@@ -985,7 +1004,9 @@ fn curve_editor(
                     .flex_1()
                     .child(
                         div()
-                            .text_xs()
+                            .text_size(px(12.))
+                            .line_height(px(16.))
+                            .font_weight(gpui_kit::FontWeight::BOLD)
                             .text_color(theme::MUTED)
                             .child(format!("T{} °C / D{} %", i + 1, i + 1)),
                     )
@@ -996,7 +1017,8 @@ fn curve_editor(
     )
     .children(problem.map(|p| {
         div()
-            .text_sm()
+            .text_size(px(13.))
+            .line_height(px(18.))
             .text_color(theme::DANGER)
             .child(p)
             .into_any_element()
@@ -1039,7 +1061,9 @@ fn slider_row(
         .flex_1()
         .child(
             div()
-                .text_xs()
+                .text_size(px(12.))
+                .line_height(px(16.))
+                .font_weight(gpui_kit::FontWeight::BOLD)
                 .text_color(theme::MUTED)
                 .child(label.to_string()),
         )
@@ -1107,11 +1131,9 @@ impl Render for Panel {
             // Not fully transparent at 0: the first frame after a switch would
             // otherwise be a blank pane.
             .opacity(0.25 + 0.75 * fade)
-            .child(view_header(view))
+            .child(view_header(self, layout, view, window, cx))
             .child(error_banner(self))
-            .when(self.busy, |el| {
-                el.child(div().text_xs().text_color(theme::FAINT).child("working…"))
-            })
+            .when(self.busy, |el| el.child(widgets::meta("working…")))
             .child(content);
 
         div()
@@ -1193,11 +1215,18 @@ fn home(
                                 .flex()
                                 .flex_col()
                                 .gap_0p5()
-                                .child(div().text_sm().text_color(theme::TEXT).child(format!(
-                                    "#{:02x}{:02x}{:02x}",
-                                    panel.kbd.red, panel.kbd.green, panel.kbd.blue
-                                )))
-                                .child(div().text_xs().text_color(theme::FAINT).child(format!(
+                                .child(
+                                    div()
+                                        .text_size(px(15.))
+                                        .line_height(px(18.))
+                                        .font(theme::mono_font())
+                                        .text_color(theme::TEXT)
+                                        .child(format!(
+                                            "#{:02x}{:02x}{:02x}",
+                                            panel.kbd.red, panel.kbd.green, panel.kbd.blue
+                                        )),
+                                )
+                                .child(widgets::meta(format!(
                                     "brightness {}% · backend {}",
                                     panel.kbd.brightness, panel.kbd.backend
                                 ))),
@@ -1220,20 +1249,15 @@ fn home(
                     .unwrap_or_else(|| "unavailable".into()),
             )
             .child(match &panel.fan {
-                None if panel.fan_error.is_none() => div()
-                    .text_sm()
-                    .text_color(theme::FAINT)
-                    .child("reading the fan snapshot…")
-                    .into_any_element(),
-                Some(f) => gauge_grid(f, "home", layout, window, cx),
-                None => div()
-                    .text_sm()
-                    .text_color(theme::FAINT)
-                    .child(match &panel.fan_error {
-                        Some(e) => format!("{e} — run `g5fan doctor` on a terminal"),
-                        None => "reading the fan snapshot…".to_string(),
-                    })
-                    .into_any_element(),
+                None if panel.fan_error.is_none() => {
+                    widgets::meta("reading the fan snapshot…").into_any_element()
+                }
+                Some(f) => gauge_grid(panel, f, "home", layout, window, cx),
+                None => widgets::meta(match &panel.fan_error {
+                    Some(e) => format!("{e} — run `g5fan doctor` on a terminal"),
+                    None => "reading the fan snapshot…".to_string(),
+                })
+                .into_any_element(),
             })
             .into_any_element(),
         ],

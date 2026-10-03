@@ -14,6 +14,134 @@ use gpui_kit::component::input::InputState;
 use gpui_kit::component::slider::{SliderEvent, SliderState};
 
 // ---------------------------------------------------------------------------
+// History — the readings behind the gauges
+// ---------------------------------------------------------------------------
+
+/// One poll's worth of readings.
+#[derive(Clone, Debug, Default)]
+pub struct Sample {
+    /// duty %, one per fan, in the order `g5fan` reports them
+    pub duty: Vec<f32>,
+    pub rpm: Vec<f32>,
+    pub cpu_c: Option<f32>,
+    pub gpu_c: Option<f32>,
+}
+
+/// A short ring of recent samples.
+///
+/// The panel polls the fan daemon every three seconds, so a gauge that shows
+/// only the current number steps like a clock. With a ring behind it the same
+/// number reads as a trend, and the sparkline costs nothing but this buffer.
+#[derive(Debug)]
+pub struct History {
+    samples: std::collections::VecDeque<Sample>,
+    cap: usize,
+}
+
+impl Default for History {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl History {
+    /// 48 samples is two and a half minutes at the poll interval: long enough
+    /// to see a curve, short enough that the sparkline still reads as "now".
+    pub const CAP: usize = 48;
+
+    pub fn new() -> Self {
+        Self {
+            samples: std::collections::VecDeque::with_capacity(Self::CAP),
+            cap: Self::CAP,
+        }
+    }
+
+    pub fn record(&mut self, fan: &RawFanStatus) {
+        let sample = Sample {
+            duty: fan
+                .fans
+                .iter()
+                .map(|f| f.duty_pct.unwrap_or(0) as f32)
+                .collect(),
+            rpm: fan.fans.iter().map(|f| f.rpm.unwrap_or(0) as f32).collect(),
+            cpu_c: fan.cpu_temp_c.map(|t| t as f32),
+            gpu_c: fan.gpu_temp_c.map(|t| t as f32),
+        };
+        if self.samples.len() == self.cap {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(sample);
+    }
+
+    pub fn len(&self) -> usize {
+        self.samples.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.samples.is_empty()
+    }
+
+    /// One series out of the ring, oldest first. `f` picks which reading of
+    /// each sample; samples where it is missing are dropped, so a temperature
+    /// that the daemon did not report does not become a zero on the graph.
+    pub fn series<T>(&self, f: impl Fn(&Sample) -> Option<T>) -> Vec<T> {
+        self.samples.iter().filter_map(f).collect()
+    }
+
+    /// Fan `index`'s rpm over time.
+    pub fn rpm(&self, index: usize) -> Vec<f32> {
+        self.series(|s| s.rpm.get(index).copied())
+    }
+
+    /// Temperature `index` (0 = CPU, 1 = GPU) over time.
+    pub fn temp(&self, index: usize) -> Vec<f32> {
+        self.series(|s| if index == 0 { s.cpu_c } else { s.gpu_c })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snapshot(duty: u8, rpm: u32, cpu: i32) -> RawFanStatus {
+        serde_json::from_str(&format!(
+            r#"{{"mode":"auto","backend":"ec","driver":true,"manual_duty":null,
+                 "curve":null,"custom_curve":[],"presets":{{}},
+                 "fans":[{{"label":"CPU","duty_pct":{duty},"rpm":{rpm}}},
+                         {{"label":"GPU","duty_pct":{duty},"rpm":{rpm}}}],
+                 "cpu_temp_c":{cpu},"gpu_temp_c":40,"ceiling_c":100,
+                 "daemon":true,"age_s":1,"stale":false}}"#
+        ))
+        .expect("snapshot parses")
+    }
+
+    #[test]
+    fn the_ring_keeps_only_the_last_window() {
+        let mut history = History::new();
+        for i in 0..History::CAP + 10 {
+            history.record(&snapshot(50, 1000 + i as u32, 50));
+        }
+        assert_eq!(history.len(), History::CAP);
+        // Oldest first: the ring dropped the first ten readings.
+        assert_eq!(history.rpm(0).first().copied(), Some((1000 + 10) as f32));
+        assert_eq!(
+            history.rpm(0).last().copied(),
+            Some((1000 + History::CAP + 9) as f32)
+        );
+    }
+
+    #[test]
+    fn every_fan_gets_its_own_series() {
+        let mut history = History::new();
+        history.record(&snapshot(30, 1200, 45));
+        history.record(&snapshot(80, 4800, 61));
+        assert_eq!(history.rpm(0), vec![1200., 4800.]);
+        assert_eq!(history.temp(0), vec![45., 61.]);
+        assert_eq!(history.temp(1), vec![40., 40.]);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Views
 // ---------------------------------------------------------------------------
 
@@ -89,6 +217,8 @@ pub struct Panel {
     pub fan: Option<RawFanStatus>,
     pub fan_error: Option<String>,
     pub watchdog: Option<bool>,
+    /// Readings behind the gauges, fed by the same poll that sets `fan`.
+    pub history: History,
     pub duty: Entity<gpui_kit::component::slider::SliderState>,
     /// curve editor points, 5 × (temp °C, duty %)
     pub curve: [[u32; 2]; 5],
@@ -185,6 +315,14 @@ impl Panel {
             cx,
         );
 
+        // Seed the trend from the snapshot the sliders were seeded from, so the
+        // first frame already has something to draw rather than a flat line
+        // that fills in three seconds later.
+        let mut history = History::new();
+        if let Ok(snapshot) = fan.as_ref() {
+            history.record(snapshot);
+        }
+
         Panel {
             view,
             kbd,
@@ -200,6 +338,7 @@ impl Panel {
             fan: fan.ok(),
             fan_error: None,
             watchdog: None,
+            history,
             duty,
             curve,
             curve_temp,
@@ -458,10 +597,51 @@ impl Panel {
         );
     }
 
+    /// Fill the trend with a synthetic ramp built from the current snapshot.
+    ///
+    /// The real history needs a minute of uptime to have anything to draw, so
+    /// without this the sparklines would never appear in a snapshot and the one
+    /// piece of the gauges that cannot be checked from the code would be the
+    /// one nobody ever looked at. `tests/snapshot.rs` calls it; nothing in the
+    /// app does.
+    pub fn seed_history(&mut self, steps: usize) {
+        let Some(snapshot) = self.fan.clone() else {
+            return;
+        };
+        self.history = History::new();
+        let mut previous = snapshot.clone();
+        for step in 0..steps {
+            // A plausible shape rather than noise: idle, then a load, then back
+            // down. What is being checked is that the line is drawn at all.
+            let phase = step as f32 / steps.max(1) as f32;
+            let wave = (phase * std::f32::consts::PI * 2.).sin();
+            let mut next = previous.clone();
+            for (i, fan) in next.fans.iter_mut().enumerate() {
+                let swing = 10. + 22. * wave + i as f32 * 6.;
+                fan.duty_pct = Some((50. + swing).clamp(0., 100.) as u8);
+                fan.rpm = Some((2400. + 900. * wave + i as f32 * 400.).max(0.) as u32);
+            }
+            next.cpu_temp_c = Some((52. + 14. * wave).round() as i32);
+            next.gpu_temp_c = Some((48. + 9. * wave).round() as i32);
+            self.history.record(&next);
+            previous = next;
+        }
+    }
+
+    /// Record a fresh fan snapshot.
+    ///
+    /// Everything that lands a snapshot goes through here rather than assigning
+    /// `fan` directly: the gauges' trend is fed from the same value, and a poll
+    /// that skipped it would leave a flat line nobody could explain.
+    pub fn set_fan(&mut self, fan: RawFanStatus) {
+        self.history.record(&fan);
+        self.fan = Some(fan);
+    }
+
     pub fn poll_fans_now(&mut self, cx: &mut Context<Self>) {
         self.dispatch(cx, fan_read_cached, |panel, result, _cx| match result {
             Ok(fan) => {
-                panel.fan = Some(fan);
+                panel.set_fan(fan);
                 panel.fan_error = None;
             }
             Err(e) => panel.fan_error = Some(e),
@@ -507,7 +687,7 @@ impl Panel {
                 let _ = this.update(cx, |panel, cx| {
                     match fan {
                         Ok(fan) => {
-                            panel.fan = Some(fan);
+                            panel.set_fan(fan);
                             panel.fan_error = None;
                         }
                         Err(e) => panel.fan_error = Some(e),

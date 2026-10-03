@@ -24,7 +24,7 @@ use gpui_kit::{
     SharedString, WindowBounds, WindowOptions, px, size, test::TestWindowExt as _,
 };
 
-use g5kbd_gui::panel::{Panel, View};
+use g5kbd_gui::panel::{History, Panel, View};
 
 /// The kit's icon bundle, so components render their glyphs offscreen too.
 struct Assets;
@@ -164,6 +164,27 @@ fn lays_out_at_every_window_width() {
             println!("layout: {}", path.display());
         }
     }
+}
+
+/// The gauges carry a sparkline of the last two and a half minutes, and the
+/// real history is empty until the panel has been open that long. This seeds a
+/// ramp so the drawing path has a snapshot to be looked at.
+#[test]
+fn the_gauges_draw_their_trend() {
+    let (mut cx, handle, panel) = open_panel_default(View::Home);
+    cx.update_window(handle, |_, _window, cx| {
+        panel.update(cx, |panel, _cx| panel.seed_history(History::CAP - 1));
+    })
+    .expect("seed the trend");
+    settle(&mut cx, handle);
+
+    let Ok(image) = cx.capture_screenshot(handle) else {
+        println!("trend: skipped (no headless renderer available)");
+        return;
+    };
+    let path = output_dir().join("gauges-trend.png");
+    image.save(&path).expect("write snapshot");
+    println!("trend: {}", path.display());
 }
 
 /// A narrow window has to collapse the sidebar rather than let it eat the

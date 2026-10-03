@@ -446,15 +446,73 @@ has, so it can choose a layout but cannot widen its own column. The one thing
 that has to give here — how wide the content is — is exactly the thing a
 container query cannot decide.
 
+### Phase 7 — surface, hierarchy and status
+
+Three things changed together, because they are one change: the panel had a
+type scale of "everything is 12 or 14 px", four identical bordered cards with
+nothing inside them ranked, and its only status indicator in the one place on
+screen nobody looks.
+
+- **The scale** is 22 / 15 / 14 / 13 / 12 / 11 and lives in
+  `widgets::{value, title, body, meta, label}`. 22 is the only monospace: numbers
+  line up, prose does not need to. Card group labels are 11 px bold uppercase
+  with a hairline under the header row; the body of the card is one surface, not
+  a second box inside the first.
+- **Elevation**: a card gets a one-pixel white edge along the top. On a window
+  darker than the card it is the difference between a panel and a hole.
+- **The status strip** at the top of every view carries the fan daemon, the
+  keyboard backend and the version, next to the title the eye already crosses.
+  The daemon dot breathes like the effect dot. It used to be a word in the
+  sidebar footer, which is also the one thing that vanished when the sidebar
+  collapsed.
+
+Done when:
+
+- `cargo test --test snapshot renders_every_view` shows the header strip with
+  three status items on all four views, and the card headers read as labels
+  rather than as titles.
+- Nothing on screen uses a font size that is not in the scale.
+
+### Phase 7 — the gauges as instruments
+
+Fan duty is a proportion of a known whole; temperature is a reading against a
+ceiling. They are drawn differently for that reason:
+
+- **Duty** is a 270° arc with the percentage inside it. The arc is spring-driven
+  off the same id the bar used, so it carries velocity across the three-second
+  steps.
+- **Temperature** keeps a bar, because a temperature has a scale and a bar has
+  one; a tick at 75 °C marks where the colour changes, so the reader does not
+  have to remember it.
+- **Both** carry a sparkline of the last 48 polls (two and a half minutes), fed
+  by `Panel::history`. Rpm is scaled against a 1000 rpm floor so a stopped fan
+  does not rescale the trace on every poll.
+
+`Panel::seed_history` fills the ring with a synthetic ramp so the sparklines
+have a snapshot to be looked at; without it the drawing path would only ever be
+exercised a minute into a session, which is to say never in review.
+
+Three bugs the snapshots caught, all the same shape — a canvas has no
+intrinsic size:
+
+- The ring's readout sat at the bottom of the ring instead of inside it, because
+  the absolutely-positioned overlay resolved its insets against a box the
+  in-flow canvas had sized. The ring is now an absolute paint layer and the
+  readout an ordinary centred child.
+- Every sparkline drew as a flat line along the top: the canvas was laid out
+  with zero height, and scaling the already-scaled series against its own peak
+  finished the job.
+- The temperature tick was `left(px(75.))`, a fixed offset on a bar whose width
+  is whatever the lane gave it.
+
+Done when `cargo test --test snapshot the_gauges_draw_their_trend` writes
+`gauges-trend.png` with a visible trace under each value.
+
 ### Still open
 
 - The contrast pass on the 8 px keycap legends and the 9–10.5 px uppercase
   labels: it needs measurement against the rendered PNGs rather than an
   opinion.
-- Surface and hierarchy: the four views are still four identical bordered
-  cards, with no elevation and no typographic scale.
-- The gauges are still bars; ring, thermometer and rpm sparkline are not
-  drawn.
 - The fan curve is still ten sliders rather than a graph.
-- The daemon status is still a word in the sidebar footer rather than a status
-  bar.
+- The keyboard preview on the Lighting view is a bare well with no card header,
+  unlike every other block on the screen.
