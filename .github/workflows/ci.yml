@@ -12,7 +12,7 @@ concurrency:
 jobs:
   panel:
     name: Panel (fmt + clippy + test)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: gui
@@ -50,7 +50,7 @@ jobs:
 
   kernel:
     name: Kernel module build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - name: Install headers for the runner kernel
@@ -83,7 +83,7 @@ jobs:
 
   python:
     name: Python CLI + shell scripts
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       # Keep the fan CLI's fake backend/state out of the real paths; there is
       # no hardware and no /var/lib here.
