@@ -2074,10 +2074,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "g5core"
+version = "0.4.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "g5kbd-gui"
 version = "0.4.0"
 dependencies = [
  "accesskit",
+ "g5core",
  "gpui-kit",
  "image",
  "libc",

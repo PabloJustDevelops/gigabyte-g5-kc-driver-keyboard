@@ -10,12 +10,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  panel:
-    name: Panel (fmt + clippy + test)
+  # One workspace means one job for the whole Rust side: the panel, the shared
+  # core and the CLIs are formatted, linted and tested together, and the curve
+  # vectors are checked by the half that runs here rather than by two suites
+  # that had to be kept in step by hand.
+  rust:
+    name: Rust (fmt + clippy + test)
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: gui
     steps:
       - uses: actions/checkout@v7
       - name: Install GPUI system dependencies
@@ -43,10 +44,10 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: gui
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+          workspaces: .
+      - run: cargo fmt --check --all
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
 
   kernel:
     name: Kernel module build
@@ -100,7 +101,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Byte-compile
-        run: python -m py_compile src/g5kbd.py src/g5fan.py tools/ec.py
+        run: python -m py_compile src/g5kbd.py src/g5fan.py tools/ec.py tools/check_packaging.py
       - name: Unit tests (curve maths, validation, rpm conversion)
         run: python -m unittest discover -s tests -v
       - name: CLI smoke tests (fake backend, no hardware)
@@ -111,5 +112,9 @@ jobs:
           python src/g5fan.py curve set 50:25 65:40 75:60 85:80 95:100
           python src/g5fan.py silent
           python src/g5fan.py auto
+      - name: Packaging (PKGBUILD source array vs the tree)
+        # Every sum in PKGBUILD is SKIP, so a file that is never listed is not a
+        # build error — it is a package that quietly ships without it.
+        run: python tools/check_packaging.py
       - name: Shell syntax check
         run: bash -n install.sh probe-kb.sh probe-effects.sh probe-fan.sh systemd/system-sleep/g5kbd PKGBUILD

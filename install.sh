@@ -169,8 +169,10 @@ fi
 
 # ---------- 3. udev: let the desktop user control the LED (no root) ----------
 install -Dm644 "$KERNEL_DIR/99-g5kbd.rules" /etc/udev/rules.d/99-g5kbd.rules
-install -Dm644 "$SRC/systemd/g5kbd-kmod-load.conf" \
-  /etc/modules-load.d/g5kbd.conf       # auto-load g5kbd at every boot
+# auto-load g5kbd (driver) and ec_sys (the EC window g5fan reads) at every
+# boot. One file: PKGBUILD installs the same one to the same place.
+install -Dm644 "$SRC/systemd/g5kbd-modules-load.conf" \
+  /etc/modules-load.d/g5kbd.conf
 udevadm control --reload-rules 2>/dev/null || true
 # Apply world-write on the LED attributes right now too (udev only acts on
 # future adds; sysfs ignores chgrp, so chmod is the only option):
@@ -185,17 +187,19 @@ fi
 # minutes; afterwards it is incremental.
 if [ "$NO_GUI" = 0 ] && command -v cargo >/dev/null 2>&1; then
   echo "==> Building the panel (cargo, first build takes a while)"
-  if ( cd "$GUI_DIR" && cargo build --release >/dev/null 2>&1 ) \
-     && [ -x "$GUI_DIR/target/release/g5kbd-gui" ]; then
-    install -m755 "$GUI_DIR/target/release/g5kbd-gui" /usr/bin/g5kbd-gui
+  # From the workspace root: the panel, the shared core and the CLIs are one
+  # `cargo build`, and the binary lands in the workspace target directory.
+  if ( cd "$SRC" && cargo build --release -p g5kbd-gui >/dev/null 2>&1 ) \
+     && [ -x "$SRC/target/release/g5kbd-gui" ]; then
+    install -m755 "$SRC/target/release/g5kbd-gui" /usr/bin/g5kbd-gui
   else
     echo "    warning: panel build failed — skipping (CLI still installed)."
-    echo "    Run it by hand to see why:  cd gui && cargo build --release"
+    echo "    Run it by hand to see why:  cargo build --release -p g5kbd-gui"
     rm -f /usr/bin/g5kbd-gui
   fi
 elif [ "$NO_GUI" = 0 ]; then
   echo "==> cargo not found — skipping the panel. To build it later:"
-  echo "    cd gui && cargo build --release"
+  echo "    cargo build --release -p g5kbd-gui   (from the repository root)"
   echo "    sudo install -m755 target/release/g5kbd-gui /usr/bin/g5kbd-gui"
 fi
 
@@ -224,6 +228,7 @@ install -Dm644 "$SRC/docs/WINDOWS-RESEARCH.md" \
   /usr/share/doc/g5kbd/WINDOWS-RESEARCH.md
 install -Dm644 "$SRC/docs/FAN-RESEARCH.md" /usr/share/doc/g5kbd/FAN-RESEARCH.md
 install -Dm644 "$SRC/docs/ROADMAP.md" /usr/share/doc/g5kbd/ROADMAP.md
+install -Dm644 "$SRC/docs/VISUAL-REWORK.md" /usr/share/doc/g5kbd/VISUAL-REWORK.md
 install -d -m 755 /var/lib/g5kbd
 # Non-root members of wheel control the keyboard through the LED node (udev)
 # and the CLI needs to persist its state file: make the state dir group-writeable.
@@ -234,11 +239,9 @@ systemctl daemon-reload
 systemctl enable g5kbd.service >/dev/null 2>&1 || true
 if [ "$NO_FAN" = 0 ]; then
   systemctl enable g5fan-watchdog.service >/dev/null 2>&1 || true
-  # ec_sys has to carry write_support=1 for the watchdog to reach the EC.
+  # ec_sys has to carry write_support=1 for the watchdog to reach the EC. The
+  # module itself is already listed in /etc/modules-load.d/g5kbd.conf above.
   install -Dm644 "$SRC/systemd/g5kbd-ec.conf" /etc/modprobe.d/g5kbd.conf
-  if ! grep -q '^ec_sys$' /etc/modules-load.d/g5kbd.conf 2>/dev/null; then
-    echo "ec_sys" >> /etc/modules-load.d/g5kbd.conf
-  fi
   systemctl restart g5fan-watchdog.service >/dev/null 2>&1 || true
 fi
 
