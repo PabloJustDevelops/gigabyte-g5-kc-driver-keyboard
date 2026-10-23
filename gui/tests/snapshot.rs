@@ -25,6 +25,7 @@ use gpui_kit::{
 };
 
 use g5kbd_gui::panel::{History, Panel, View};
+use g5kbd_gui::{backend, widgets};
 
 /// The kit's icon bundle, so components render their glyphs offscreen too.
 struct Assets;
@@ -42,7 +43,12 @@ impl AssetSource for Assets {
 fn output_dir() -> PathBuf {
     let dir = std::env::var_os("G5KBD_SNAPSHOT_DIR").map_or_else(
         || {
+            // The *workspace* target directory: `CARGO_MANIFEST_DIR` is the
+            // `gui` crate, and since the workspace arrived the build tree is one
+            // level up. Writing to `gui/target` again would put images where
+            // `git status` no longer ignores them and nothing looks for them.
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
                 .join("target")
                 .join("snapshots")
         },
@@ -69,11 +75,27 @@ fn headless() -> HeadlessAppContext {
 /// The window the app opens at, and the one the default snapshots use.
 const DEFAULT_SIZE: (f32, f32) = (1040., 680.);
 
+/// A runner without a GPU cannot bring the headless renderer up at all, so the
+/// tests that need a window bail out loudly instead of failing the build for a
+/// picture. (A renderer that fails *after* the window exists is already handled
+/// where the screenshot is taken.)
+macro_rules! skip_no_renderer {
+    ($what:expr) => {
+        println!(
+            "snapshot: skipped {} (no headless renderer available)",
+            $what
+        )
+    };
+}
+
 /// Open the panel at `size`, pinned to `view`.
+///
+/// `None` when no headless renderer is available — GitHub runners have no GPU,
+/// so the window never opens there.
 fn open_panel(
     view: View,
     size_px: (f32, f32),
-) -> (HeadlessAppContext, AnyWindowHandle, Entity<Panel>) {
+) -> Option<(HeadlessAppContext, AnyWindowHandle, Entity<Panel>)> {
     let mut cx = headless();
     let (handle, panel) = cx
         .update(|cx: &mut App| {
@@ -91,12 +113,12 @@ fn open_panel(
                 |window, cx| cx.new(|cx| Panel::new_for_snapshot(window, cx, view)),
             )
         })
-        .expect("open headless window");
-    (cx, handle, panel)
+        .ok()?;
+    Some((cx, handle, panel))
 }
 
 /// The panel at its shipped window size.
-fn open_panel_default(view: View) -> (HeadlessAppContext, AnyWindowHandle, Entity<Panel>) {
+fn open_panel_default(view: View) -> Option<(HeadlessAppContext, AnyWindowHandle, Entity<Panel>)> {
     open_panel(view, DEFAULT_SIZE)
 }
 
@@ -127,7 +149,10 @@ fn renders_every_view() {
         (View::Profiles, "profiles"),
         (View::Fans, "fans"),
     ] {
-        let (mut cx, handle, _) = open_panel_default(view);
+        let Some((mut cx, handle, _)) = open_panel_default(view) else {
+            skip_no_renderer!(name);
+            continue;
+        };
         settle(&mut cx, handle);
 
         // CI runners have no GPU, so `WgpuHeadlessRenderer::new()` may not come
@@ -152,7 +177,10 @@ fn renders_every_view() {
 fn lays_out_at_every_window_width() {
     for (label, width) in [("compact", 720.), ("wide", 1600.)] {
         for (view, name) in [(View::Home, "home"), (View::Fans, "fans")] {
-            let (mut cx, handle, _) = open_panel(view, (width, 720.));
+            let Some((mut cx, handle, _)) = open_panel(view, (width, 720.)) else {
+                skip_no_renderer!(width);
+                continue;
+            };
             settle(&mut cx, handle);
 
             let Ok(image) = cx.capture_screenshot(handle) else {
@@ -171,7 +199,10 @@ fn lays_out_at_every_window_width() {
 /// ramp so the drawing path has a snapshot to be looked at.
 #[test]
 fn the_gauges_draw_their_trend() {
-    let (mut cx, handle, panel) = open_panel_default(View::Home);
+    let Some((mut cx, handle, panel)) = open_panel_default(View::Home) else {
+        skip_no_renderer!("home");
+        return;
+    };
     cx.update_window(handle, |_, _window, cx| {
         panel.update(cx, |panel, _cx| panel.seed_history(History::CAP - 1));
     })
@@ -187,19 +218,101 @@ fn the_gauges_draw_their_trend() {
     println!("trend: {}", path.display());
 }
 
+/// The fan curve is a shape, so it is drawn as one: five points on a
+/// temperature/duty graph, with the live temperatures marked on the ramp. The
+/// window has to be taller than the shipped one to see it — at 680 px the card
+/// sits below the fold of a scrolling pane — so this is its own snapshot
+/// rather than a line of `renders_every_view`.
+///
+/// The drag is the part that fails a build: it presses on the middle handle
+/// where the graph draws it and moves it, which exercises the whole path from a
+/// pointer position to a legal curve.
+#[test]
+fn the_curve_graph_is_draggable() {
+    let Some((mut cx, handle, panel)) = open_panel(View::Fans, (1040., 1100.)) else {
+        skip_no_renderer!("curve graph");
+        return;
+    };
+    settle(&mut cx, handle);
+
+    let before = cx.update(|app| panel.read(app).curve);
+
+    let (from, to) = cx
+        .update_window(handle, |_, window, _cx| {
+            let bounds = window.find("curve-graph").bounds();
+            let from = widgets::curve_handle(bounds, &before, 2);
+            // Up and to the left: cooler at a higher duty.
+            (from, gpui_kit::point(from.x - px(12.), from.y - px(24.)))
+        })
+        .expect("locate the graph");
+    cx.update_window(handle, |_, window, cx| window.drag(from, to, cx))
+        .expect("drag the middle point");
+
+    let after = cx.update(|app| panel.read(app).curve);
+    assert!(
+        after[2][0] < before[2][0],
+        "the point must move left: {} -> {}",
+        before[2][0],
+        after[2][0]
+    );
+    assert!(
+        after[2][1] > before[2][1],
+        "and up: {} -> {}",
+        before[2][1],
+        after[2][1]
+    );
+    assert_eq!(after[1], before[1], "the point to its left must not move");
+    assert_eq!(after[3], before[3], "nor the point to its right");
+    assert_eq!(
+        backend::fan::curve_problem(&after),
+        None,
+        "a drag may never leave the editor holding a curve the daemon refuses"
+    );
+
+    // The sliders are the keyboard path onto the same five values: a drag that
+    // moved only the graph would show one curve and hand the CLI another.
+    let (temp, duty) = cx.update(|app| {
+        let panel = panel.read(app);
+        (
+            panel.curve_temp[2].read(app).value().start(),
+            panel.curve_duty[2].read(app).value().start(),
+        )
+    });
+    assert_eq!(
+        temp.round() as i32,
+        after[2][0],
+        "the T3 slider must follow the point"
+    );
+    assert_eq!(duty.round() as i32, after[2][1], "and so must D3");
+
+    let Ok(image) = cx.capture_screenshot(handle) else {
+        println!("curve graph: skipped the image (no headless renderer available)");
+        return;
+    };
+    let path = output_dir().join("curve-graph.png");
+    image.save(&path).expect("write snapshot");
+    println!("curve graph: {}", path.display());
+}
+
 /// A narrow window has to collapse the sidebar rather than let it eat the
 /// content. Checked as pixels: the rail is 64 px, so if the labels are still
 /// being drawn the far-left column of the frame is not the rail's flat
 /// background colour.
 #[test]
 fn a_narrow_window_collapses_the_sidebar() {
-    let (mut cx, handle, _) = open_panel(View::Home, (720., 720.));
+    let Some((mut cx, handle, _)) = open_panel(View::Home, (720., 720.)) else {
+        skip_no_renderer!("narrow window");
+        return;
+    };
     settle(&mut cx, handle);
     let Ok(narrow) = cx.capture_screenshot(handle) else {
         println!("narrow: skipped (no headless renderer available)");
         return;
     };
-    let (mut cx, handle, _) = open_panel_default(View::Home);
+    let Some((mut cx, handle, _)) = open_panel_default(View::Home) else {
+        skip_no_renderer!("home");
+        return;
+    };
     settle(&mut cx, handle);
     let Ok(default) = cx.capture_screenshot(handle) else {
         return;
@@ -219,7 +332,10 @@ fn a_narrow_window_collapses_the_sidebar() {
 /// change view at all. This is the regression guard for that.
 #[test]
 fn sidebar_is_operable_from_the_keyboard() {
-    let (mut cx, handle, panel) = open_panel_default(View::Home);
+    let Some((mut cx, handle, panel)) = open_panel_default(View::Home) else {
+        skip_no_renderer!("home");
+        return;
+    };
     render(&mut cx, handle);
 
     cx.update_window(handle, |_, window, cx| {
@@ -235,7 +351,10 @@ fn sidebar_is_operable_from_the_keyboard() {
 /// Space must work as well as Enter, the way a native button does.
 #[test]
 fn sidebar_rows_activate_on_space() {
-    let (mut cx, handle, panel) = open_panel_default(View::Home);
+    let Some((mut cx, handle, panel)) = open_panel_default(View::Home) else {
+        skip_no_renderer!("home");
+        return;
+    };
     render(&mut cx, handle);
 
     cx.update_window(handle, |_, window, cx| {
@@ -252,7 +371,10 @@ fn sidebar_rows_activate_on_space() {
 /// above focus by hand are unreachable in real use.
 #[test]
 fn tab_moves_focus_into_the_panel() {
-    let (mut cx, handle, _) = open_panel_default(View::Home);
+    let Some((mut cx, handle, _)) = open_panel_default(View::Home) else {
+        skip_no_renderer!("home");
+        return;
+    };
     render(&mut cx, handle);
 
     let before = cx
@@ -274,7 +396,10 @@ fn tab_moves_focus_into_the_panel() {
 /// Shift+Tab walks back out again.
 #[test]
 fn shift_tab_moves_focus_back() {
-    let (mut cx, handle, _) = open_panel_default(View::Home);
+    let Some((mut cx, handle, _)) = open_panel_default(View::Home) else {
+        skip_no_renderer!("home");
+        return;
+    };
     render(&mut cx, handle);
 
     cx.update_window(handle, |_, window, cx| {
@@ -304,7 +429,10 @@ fn shift_tab_moves_focus_back() {
 /// not. The fade is keyed on `view_seq`, so a stray bump would replay it.
 #[test]
 fn switching_views_arms_the_fade() {
-    let (mut cx, handle, panel) = open_panel_default(View::Home);
+    let Some((mut cx, handle, panel)) = open_panel_default(View::Home) else {
+        skip_no_renderer!("home");
+        return;
+    };
     settle(&mut cx, handle);
 
     let start = cx.update(|app| panel.read(app).view_seq);
@@ -335,7 +463,10 @@ fn switching_views_arms_the_fade() {
 /// between a transition and a no-op, checked as pixels.
 #[test]
 fn the_view_fades_in_rather_than_snapping() {
-    let (mut cx, handle, panel) = open_panel_default(View::Home);
+    let Some((mut cx, handle, panel)) = open_panel_default(View::Home) else {
+        skip_no_renderer!("home");
+        return;
+    };
     settle(&mut cx, handle);
     let Ok(before) = cx.capture_screenshot(handle) else {
         println!("fade: skipped (no headless renderer available)");
@@ -380,7 +511,10 @@ fn the_view_fades_in_rather_than_snapping() {
 /// pixel, because the fade was already at its end state on the first frame.
 #[test]
 fn reduced_motion_leaves_the_fade_settled() {
-    let (mut cx, handle, panel) = open_panel_default(View::Home);
+    let Some((mut cx, handle, panel)) = open_panel_default(View::Home) else {
+        skip_no_renderer!("home");
+        return;
+    };
     cx.update(|app| app.set_reduce_motion(true));
     settle(&mut cx, handle);
 

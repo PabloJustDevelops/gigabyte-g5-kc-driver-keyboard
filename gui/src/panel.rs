@@ -10,6 +10,11 @@ use crate::backend::{
 };
 use crate::theme;
 
+// The curve type is the daemon's own (`[temperature °C, duty %]`), not a panel
+// invention: the editor hands the same values to `g5fan curve set` that the
+// validator in `g5core` checked.
+use g5core::Point;
+
 use gpui_kit::component::input::InputState;
 use gpui_kit::component::slider::{SliderEvent, SliderState};
 
@@ -102,6 +107,50 @@ impl History {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A panel is expensive to build in a unit test (it reads the hardware), so
+    /// the clamping is tested as the free function it is.
+    use super::clamp_curve_point as clamp;
+
+    #[test]
+    fn a_point_cannot_be_dragged_past_its_neighbours() {
+        let curve = [[50, 25], [65, 40], [75, 60], [85, 80], [95, 100]];
+        // Dragging the middle point far to the left stops one degree above its
+        // predecessor; the same drag upward stops at the duty of the point to
+        // its right, because duty may not fall as the curve heats — the two
+        // bounds belong to the same drag, not to two different ones.
+        assert_eq!(clamp(&curve, 2, 10., 90.), [66, 80]);
+        // And the other way: one degree below its successor's temperature, no
+        // lower than its predecessor's duty.
+        assert_eq!(clamp(&curve, 2, 200., 10.), [84, 40]);
+    }
+
+    #[test]
+    fn duty_never_falls_as_the_curve_heats() {
+        let curve = [[50, 25], [65, 40], [75, 60], [85, 80], [95, 100]];
+        // Pulling the last point's duty down stops at its predecessor's.
+        assert_eq!(clamp(&curve, 4, 95., 0.), [95, 80]);
+        // The first point has no predecessor, so only the absolute bounds apply.
+        assert_eq!(clamp(&curve, 0, -50., -50.), [20, 0]);
+        assert_eq!(clamp(&curve, 4, 500., 500.), [110, 100]);
+    }
+
+    #[test]
+    fn every_clamped_point_survives_the_validators() {
+        let mut curve = [[50, 25], [65, 40], [75, 60], [85, 80], [95, 100]];
+        // Drag each point hard in each direction: whatever the pointer does, the
+        // curve the CLI would be handed has to stay legal.
+        for i in 0..curve.len() {
+            for (temp, duty) in [(0., 0.), (200., 100.), (10., 90.), (200., 0.)] {
+                curve[i] = clamp(&curve, i, temp, duty);
+                assert_eq!(
+                    crate::backend::fan::curve_problem(&curve),
+                    None,
+                    "point {i} dragged to {temp}/{duty} broke the curve"
+                );
+            }
+        }
+    }
 
     fn snapshot(duty: u8, rpm: u32, cpu: i32) -> RawFanStatus {
         serde_json::from_str(&format!(
@@ -221,10 +270,12 @@ pub struct Panel {
     pub history: History,
     pub duty: Entity<gpui_kit::component::slider::SliderState>,
     /// curve editor points, 5 × (temp °C, duty %)
-    pub curve: [[u32; 2]; 5],
+    pub curve: [Point; 5],
     pub curve_temp: Vec<Entity<gpui_kit::component::slider::SliderState>>,
     pub curve_duty: Vec<Entity<gpui_kit::component::slider::SliderState>>,
     pub curve_dirty: bool,
+    /// Which curve point the pointer is dragging on the graph, if any.
+    pub curve_drag: Option<usize>,
 
     // infra
     /// One focus handle per sidebar row. The rows are plain divs, so without
@@ -247,6 +298,26 @@ pub struct Panel {
     /// transient error from the last action, cleared on the next success
     pub err: Option<String>,
     pub busy: bool,
+}
+
+/// Clamp a proposed curve point so the result still passes `curve_problem`.
+///
+/// Temperatures must strictly rise and duty must never fall as it heats, or
+/// `g5fan curve set` refuses the result and the editor is left showing
+/// something the daemon will not accept. Clamping to the neighbours is what
+/// stops a drag from walking a point through the one beside it.
+pub fn clamp_curve_point(curve: &[Point], i: usize, temp: f32, duty: f32) -> Point {
+    let mut t = temp.clamp(20., 110.);
+    let mut d = duty.clamp(0., 100.);
+    if i > 0 {
+        t = t.max(curve[i - 1][0] as f32 + 1.);
+        d = d.max(curve[i - 1][1] as f32);
+    }
+    if i + 1 < curve.len() {
+        t = t.min(curve[i + 1][0] as f32 - 1.);
+        d = d.min(curve[i + 1][1] as f32);
+    }
+    [t.round() as i32, d.round() as i32]
 }
 
 impl Panel {
@@ -298,7 +369,7 @@ impl Panel {
             .ok()
             .map(|f| f.custom_curve.clone())
             .unwrap_or_else(|| vec![[50, 25], [65, 40], [75, 60], [85, 80], [95, 100]]);
-        let mut curve = [[50u32, 25], [65, 40], [75, 60], [85, 80], [95, 100]];
+        let mut curve: [Point; 5] = [[50, 25], [65, 40], [75, 60], [85, 80], [95, 100]];
         for (i, point) in custom.iter().take(5).enumerate() {
             curve[i] = [point[0].min(110), point[1].min(100)];
         }
@@ -344,11 +415,12 @@ impl Panel {
             curve_temp,
             curve_duty,
             curve_dirty: false,
+            curve_drag: None,
             // `cx.focus_handle()` starts with `tab_stop: false`, which keeps the
             // handle out of the tab order even though `track_focus` puts it in the
             // tab-stop map. Without this, Tab walks straight past the sidebar.
             nav_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
-            mode_focus: FanMode::ALL
+            mode_focus: FanMode::UI_MODES
                 .iter()
                 .map(|_| cx.focus_handle().tab_stop(true))
                 .collect(),
@@ -515,7 +587,7 @@ impl Panel {
     fn sync_curve_point(&mut self, i: usize, cx: &mut Context<Self>) {
         let t = self.curve_temp[i].read(cx).value().start();
         let d = self.curve_duty[i].read(cx).value().start();
-        self.curve[i] = [t as u32, d as u32];
+        self.curve[i] = [t as i32, d as i32];
         self.curve_dirty = true;
         cx.notify();
     }
@@ -595,6 +667,40 @@ impl Panel {
                 panel.poll_fans_now(cx);
             },
         );
+    }
+
+    /// Move curve point `i` to (`temp`, `duty`), keeping the curve valid.
+    ///
+    /// The graph enforces [`clamp_curve_point`] while the pointer is down, so
+    /// the editor can never hold a curve the daemon would refuse.
+    pub fn move_curve_point(
+        &mut self,
+        i: usize,
+        temp: f32,
+        duty: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let [t, d] = clamp_curve_point(&self.curve, i, temp, duty);
+        self.curve[i] = [t, d];
+        // The sliders are the keyboard path onto the same five values; leaving
+        // them behind would show one curve while another was being edited.
+        self.curve_temp[i].update(cx, |s, cx| s.set_value(t as f32, window, cx));
+        self.curve_duty[i].update(cx, |s, cx| s.set_value(d as f32, window, cx));
+        self.curve_dirty = true;
+        cx.notify();
+    }
+
+    /// Pick up curve point `i` for dragging.
+    pub fn begin_curve_drag(&mut self, i: usize, cx: &mut Context<Self>) {
+        self.curve_drag = Some(i);
+        cx.notify();
+    }
+
+    pub fn end_curve_drag(&mut self, cx: &mut Context<Self>) {
+        if self.curve_drag.take().is_some() {
+            cx.notify();
+        }
     }
 
     /// Fill the trend with a synthetic ramp built from the current snapshot.
@@ -717,7 +823,7 @@ impl Panel {
     /// Write the edited curve and select custom, mirroring the web panel's
     /// "Save and use" button. Validation mirrors `g5fan curve set`.
     pub fn apply_curve(&mut self, cx: &mut Context<Self>) {
-        let points: Vec<[u32; 2]> = self.curve.to_vec();
+        let points: Vec<Point> = self.curve.to_vec();
         if let Some(problem) = backend::fan::curve_problem(&points) {
             self.err = Some(problem);
             cx.notify();

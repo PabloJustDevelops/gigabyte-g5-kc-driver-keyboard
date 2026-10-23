@@ -457,6 +457,10 @@ fn mode_chip(
             FanMode::Silent => "quiet curve",
             FanMode::MaxQ => "quietest curve",
             FanMode::Custom => "your curve",
+            // The panel has no chip for a pinned duty (it is chosen on the
+            // slider), but `g5fan status` can report the mode, and the panel
+            // should say what it is rather than claim the fans are on auto.
+            FanMode::Manual => "pinned duty",
         }))
         .into_any_element()
 }
@@ -836,7 +840,7 @@ fn fans(
                         .flex_wrap()
                         .gap_2()
                         .children(
-                            FanMode::ALL
+                            FanMode::UI_MODES
                                 .iter()
                                 .enumerate()
                                 .map(|(i, m)| mode_chip(panel, i, *m, window, cx)),
@@ -987,6 +991,9 @@ fn curve_editor(
     .child(
         widgets::body("the daemon turns this ramp into duty: at or below T1 the fans hold D1, at or above T5 they hold D5, and between points the duty is interpolated. Duty must never fall as it gets hotter.")
     )
+    // The graph is the editor; the sliders underneath are the same five values
+    // for a keyboard, because a canvas is not in the tab ring.
+    .child(widgets::curve_graph(panel, cx))
     .child(
             div()
                 .flex()

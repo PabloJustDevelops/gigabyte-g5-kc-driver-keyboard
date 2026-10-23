@@ -4,11 +4,19 @@
 // widgets (Button, Slider, Switch, Input, Toggle) cover the rest.
 
 use gpui_kit::{
-    AnyElement, App, BoxShadow, Div, IntoElement, ParentElement, Pixels, RenderOnce, SharedString,
-    Styled, Window, canvas, div, point, px, relative,
+    AnyElement, App, Bounds, BoxShadow, Context, Div, InteractiveElement as _, IntoElement,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point,
+    RenderOnce, SharedString, Styled, TestSupportExt as _, Window, canvas, div, point, px,
+    relative,
 };
 
+// `Point` from the kit is a window position; a `CurvePoint` is a (temperature,
+// duty) pair, and it is the daemon's own type.
+use g5core::Point as CurvePoint;
+
+use crate::backend;
 use crate::motion;
+use crate::panel::Panel;
 use crate::theme::{self, mix};
 
 // ---------------------------------------------------------------------------
@@ -503,6 +511,298 @@ pub fn temp_gauge(
                 ),
         )
         .into_any_element()
+}
+
+// ---------------------------------------------------------------------------
+// The fan curve, as a graph
+// ---------------------------------------------------------------------------
+
+/// The two ends of the graph's axes. The slider ranges say the same thing;
+/// keeping one pair of constants here is what stops a handle from being drawn
+/// outside the area it can be dragged in.
+pub const TEMP_MIN: f32 = 20.;
+pub const TEMP_MAX: f32 = 110.;
+
+/// How close, in pixels, the pointer has to be to a handle to pick it up.
+const GRAB_PX: f32 = 16.;
+
+/// Where curve point `i` is drawn, in window pixels.
+///
+/// Public because `tests/snapshot.rs` has to press the pointer on the handle it
+/// means to drag, and computing the mapping a second time in the test would let
+/// the two drift apart without either side failing.
+pub fn curve_handle(bounds: Bounds<Pixels>, curve: &[CurvePoint], i: usize) -> Point<Pixels> {
+    let p = curve[i.min(curve.len().saturating_sub(1))];
+    point(
+        bounds.origin.x + (p[0] as f32 - TEMP_MIN) / (TEMP_MAX - TEMP_MIN) * bounds.size.width,
+        bounds.origin.y + (1. - p[1] as f32 / 100.) * bounds.size.height,
+    )
+}
+
+/// A pointer position read back as (temperature, duty).
+fn curve_units(bounds: Bounds<Pixels>, at: Point<Pixels>) -> (f32, f32) {
+    let x = ((at.x - bounds.origin.x) / bounds.size.width).clamp(0., 1.);
+    let y = ((at.y - bounds.origin.y) / bounds.size.height).clamp(0., 1.);
+    (TEMP_MIN + x * (TEMP_MAX - TEMP_MIN), (1. - y) * 100.)
+}
+
+/// The fan curve, as a graph with five draggable points.
+///
+/// The five pairs of sliders below stay the keyboard path onto the same five
+/// values — a canvas has no place in the tab ring, and the curve has to stay
+/// editable without a pointer — so this only draws `panel.curve` and reports
+/// drags back through `Panel::move_curve_point`.
+pub fn curve_graph(panel: &mut Panel, cx: &mut Context<Panel>) -> AnyElement {
+    let points: Vec<CurvePoint> = panel.curve.to_vec();
+    let dragging = panel.curve_drag;
+    let colour = panel.accent();
+    // Where the live temperatures fall on the ramp. This is the one thing a
+    // graph can say that ten sliders cannot: the curve is a function, the
+    // machine is a point moving along it, and the two are drawn together.
+    let marks: Vec<(String, i32, gpui_kit::Rgba)> = [
+        ("CPU", panel.fan.as_ref().and_then(|f| f.cpu_temp_c)),
+        ("GPU", panel.fan.as_ref().and_then(|f| f.gpu_temp_c)),
+    ]
+    .into_iter()
+    .filter_map(|(label, temp)| temp.map(|t| (label.to_string(), t, temp_color(t))))
+    .collect();
+
+    // The canvas learns its own bounds during prepaint and the mouse handlers
+    // read them back: the cheapest way to get a pointer position into graph
+    // units, and the same rectangle the paint closure is given.
+    let bounds: std::rc::Rc<std::cell::RefCell<Option<Bounds<Pixels>>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(None));
+
+    let plot = {
+        let bounds = bounds.clone();
+        let curve = points.clone();
+        let painted = marks
+            .iter()
+            .map(|(_, t, c)| (*t as f32, *c))
+            .collect::<Vec<_>>();
+        div().relative().w_full().h(px(190.)).child(
+            canvas(
+                move |b, _window, _cx| {
+                    *bounds.borrow_mut() = Some(b);
+                },
+                move |b, _state, window, _cx| {
+                    draw_curve(b, &curve, &painted, dragging, colour, window);
+                },
+            )
+            .absolute()
+            .inset_0(),
+        )
+    };
+
+    let on_down = {
+        let bounds = bounds.clone();
+        let curve = points.clone();
+        cx.listener(
+            move |panel: &mut Panel, event: &MouseDownEvent, _window, cx| {
+                let Some(b) = *bounds.borrow() else {
+                    return;
+                };
+                // Nearest handle wins, as long as the pointer came down within a
+                // thumb's reach of it; a press on empty graph does nothing, which
+                // is better than teleporting a point to where the pointer is.
+                let grabbed = (0..curve.len())
+                    .map(|i| curve_handle(b, &curve, i))
+                    .map(|p| {
+                        f32::from(p.x - event.position.x).hypot(f32::from(p.y - event.position.y))
+                    })
+                    .enumerate()
+                    .min_by(|(_, a), (_, b)| a.total_cmp(b))
+                    .filter(|(_, distance)| *distance <= GRAB_PX);
+                if let Some((i, _)) = grabbed {
+                    panel.begin_curve_drag(i, cx);
+                    cx.stop_propagation();
+                }
+            },
+        )
+    };
+
+    let on_move = {
+        let bounds = bounds.clone();
+        cx.listener(
+            move |panel: &mut Panel, event: &MouseMoveEvent, window, cx| {
+                let Some(i) = panel.curve_drag else {
+                    return;
+                };
+                let Some(b) = *bounds.borrow() else {
+                    return;
+                };
+                let (temp, duty) = curve_units(b, event.position);
+                panel.move_curve_point(i, temp, duty, window, cx);
+                cx.stop_propagation();
+            },
+        )
+    };
+
+    // The drag also ends when the button comes up outside the plot, or a press
+    // there would leave the next pointer move dragging a point nobody grabbed.
+    let on_up = cx.listener(|panel: &mut Panel, _event: &MouseUpEvent, _window, cx| {
+        panel.end_curve_drag(cx);
+    });
+    let on_up_out = cx.listener(|panel: &mut Panel, _event: &MouseUpEvent, _window, cx| {
+        panel.end_curve_drag(cx);
+    });
+
+    // Captions rather than axis text: a canvas cannot draw glyphs without
+    // shaping them by hand, and these three rows are enough to read the graph.
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .flex()
+                .justify_between()
+                .child(meta("duty %"))
+                .child(meta(if dragging.is_some() {
+                    "drag to move the point"
+                } else {
+                    "drag a point, or use the sliders below"
+                })),
+        )
+        .child(
+            plot.id("curve-graph")
+                .test_support()
+                .cursor(gpui_kit::CursorStyle::OpenHand)
+                .on_mouse_down(MouseButton::Left, on_down)
+                .on_mouse_move(on_move)
+                .on_mouse_up(MouseButton::Left, on_up)
+                .on_mouse_up_out(MouseButton::Left, on_up_out),
+        )
+        .child(
+            div()
+                .flex()
+                .justify_between()
+                .child(meta(format!("{} °C", TEMP_MIN as i32)))
+                .child(meta(format!("{} °C", TEMP_MAX as i32))),
+        )
+        .children(marks.iter().map(|(label, temp, colour)| {
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(div().size(px(8.)).rounded_full().bg(*colour))
+                .child(meta(format!(
+                    "{label} {temp} °C → {} % on this curve",
+                    backend::fan::duty_for(&points, *temp)
+                )))
+        }))
+        .into_any_element()
+}
+
+/// A circle, built from four quarter arcs. `PathBuilder` has no ellipse
+/// primitive, and this is the only rounded thing on the graph.
+fn disc(cx: Pixels, cy: Pixels, r: Pixels) -> Option<gpui_kit::Path<Pixels>> {
+    let mut path = gpui_kit::PathBuilder::fill();
+    let (w, h) = (r, r);
+    path.move_to(point(cx + w, cy));
+    path.arc_to(point(w, h), px(0.), false, true, point(cx, cy + h));
+    path.arc_to(point(w, h), px(0.), false, true, point(cx - w, cy));
+    path.arc_to(point(w, h), px(0.), false, true, point(cx, cy - h));
+    path.arc_to(point(w, h), px(0.), false, true, point(cx + w, cy));
+    path.close();
+    path.build().ok()
+}
+
+/// Grid, area, curve, live markers and handles.
+fn draw_curve(
+    bounds: Bounds<Pixels>,
+    curve: &[CurvePoint],
+    marks: &[(f32, gpui_kit::Rgba)],
+    dragging: Option<usize>,
+    colour: gpui_kit::Rgba,
+    window: &mut Window,
+) {
+    // Clamped into the plot: a sensor colder than the graph's domain (20 °C at
+    // the left, 110 °C at the right) belongs on the edge, not outside the card.
+    let x = |temp: f32| {
+        let fraction = ((temp - TEMP_MIN) / (TEMP_MAX - TEMP_MIN)).clamp(0., 1.);
+        bounds.origin.x + fraction * bounds.size.width
+    };
+    let y = |duty: f32| bounds.origin.y + (1. - duty / 100.) * bounds.size.height;
+
+    // A quarter, a half and three quarters duty: enough to read a value off
+    // the graph by eye, faint enough not to compete with the curve.
+    for step in [25_f32, 50., 75.] {
+        let mut path = gpui_kit::PathBuilder::stroke(px(1.));
+        path.move_to(point(bounds.origin.x, y(step)));
+        path.line_to(point(bounds.origin.x + bounds.size.width, y(step)));
+        if let Ok(path) = path.build() {
+            window.paint_path(path, theme::hsla(theme::LINE, 0.8));
+        }
+    }
+
+    // The area under the curve: what the daemon will ask of the fans at every
+    // temperature, drawn as a shape rather than described. It runs to both
+    // edges because the ramp is clamped at its ends, not truncated: below the
+    // first point the fans hold D1 and above the last they hold D5.
+    let first = curve.first().copied().unwrap_or([TEMP_MIN as i32, 0]);
+    let last = curve.last().copied().unwrap_or([TEMP_MAX as i32, 0]);
+    let mut area = gpui_kit::PathBuilder::fill();
+    area.move_to(point(bounds.origin.x, bounds.origin.y + bounds.size.height));
+    area.line_to(point(x(TEMP_MIN), y(first[1] as f32)));
+    for p in curve {
+        area.line_to(point(x(p[0] as f32), y(p[1] as f32)));
+    }
+    area.line_to(point(x(TEMP_MAX), y(last[1] as f32)));
+    area.line_to(point(
+        bounds.origin.x + bounds.size.width,
+        bounds.origin.y + bounds.size.height,
+    ));
+    area.close();
+    if let Ok(path) = area.build() {
+        window.paint_path(path, theme::hsla(colour, 0.12));
+    }
+
+    let mut line = gpui_kit::PathBuilder::stroke(px(2.));
+    line.move_to(point(x(TEMP_MIN), y(first[1] as f32)));
+    for p in curve {
+        line.line_to(point(x(p[0] as f32), y(p[1] as f32)));
+    }
+    line.line_to(point(x(TEMP_MAX), y(last[1] as f32)));
+    if let Ok(path) = line.build() {
+        window.paint_path(path, colour);
+    }
+
+    // The live temperatures, as a plumb line each and a dot where the curve
+    // answers them. "62 °C" and "47 %" on two gauges do not tell the reader
+    // where the second number came from; this does.
+    for (temp, mark) in marks {
+        let mut guide = gpui_kit::PathBuilder::stroke(px(1.));
+        guide.move_to(point(x(*temp), bounds.origin.y));
+        guide.line_to(point(x(*temp), bounds.origin.y + bounds.size.height));
+        if let Ok(path) = guide.build() {
+            window.paint_path(path, theme::hsla(*mark, 0.35));
+        }
+        let duty = backend::fan::duty_for(curve, temp.round() as i32) as f32;
+        if let Some(path) = disc(x(*temp), y(duty), px(3.5)) {
+            window.paint_path(path, *mark);
+        }
+    }
+
+    for (i, p) in curve.iter().enumerate() {
+        let (cx, cy) = (x(p[0] as f32), y(p[1] as f32));
+        let grabbed = dragging == Some(i);
+        if grabbed {
+            // A halo rather than a bigger dot: it reads as "this one has the
+            // pointer" without the handle changing size under the cursor.
+            if let Some(path) = disc(cx, cy, px(11.)) {
+                window.paint_path(path, theme::hsla(theme::WHITE, 0.8));
+            }
+        }
+        if let Some(path) = disc(cx, cy, px(if grabbed { 6.5 } else { 5. })) {
+            window.paint_path(path, colour);
+        }
+        // A dark centre: without it a light accent turns the handle into a
+        // hole punched in the curve.
+        if let Some(path) = disc(cx, cy, px(2.)) {
+            window.paint_path(path, theme::BG);
+        }
+    }
 }
 
 /// Tint helper shared by the keyboard preview: the resting colour takes the
