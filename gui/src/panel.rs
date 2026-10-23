@@ -1,17 +1,194 @@
 // The root view: navigation, shared state, and the async plumbing that keeps
 // everything fresh without ever blocking the UI thread.
 
-use gpui_kit::{App, AppContext as _, Context, Entity, Subscription, Task, Window};
+use gpui_kit::{App, AppContext as _, Context, Entity, FocusHandle, Subscription, Task, Window};
 
 use crate::backend::{
     self,
-    fan::RawFanStatus,
+    fan::{FanMode, RawFanStatus},
     kbd::{self, KbState},
 };
 use crate::theme;
 
+// The curve type is the daemon's own (`[temperature °C, duty %]`), not a panel
+// invention: the editor hands the same values to `g5fan curve set` that the
+// validator in `g5core` checked.
+use g5core::Point;
+
 use gpui_kit::component::input::InputState;
 use gpui_kit::component::slider::{SliderEvent, SliderState};
+
+// ---------------------------------------------------------------------------
+// History — the readings behind the gauges
+// ---------------------------------------------------------------------------
+
+/// One poll's worth of readings.
+#[derive(Clone, Debug, Default)]
+pub struct Sample {
+    /// duty %, one per fan, in the order `g5fan` reports them
+    pub duty: Vec<f32>,
+    pub rpm: Vec<f32>,
+    pub cpu_c: Option<f32>,
+    pub gpu_c: Option<f32>,
+}
+
+/// A short ring of recent samples.
+///
+/// The panel polls the fan daemon every three seconds, so a gauge that shows
+/// only the current number steps like a clock. With a ring behind it the same
+/// number reads as a trend, and the sparkline costs nothing but this buffer.
+#[derive(Debug)]
+pub struct History {
+    samples: std::collections::VecDeque<Sample>,
+    cap: usize,
+}
+
+impl Default for History {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl History {
+    /// 48 samples is two and a half minutes at the poll interval: long enough
+    /// to see a curve, short enough that the sparkline still reads as "now".
+    pub const CAP: usize = 48;
+
+    pub fn new() -> Self {
+        Self {
+            samples: std::collections::VecDeque::with_capacity(Self::CAP),
+            cap: Self::CAP,
+        }
+    }
+
+    pub fn record(&mut self, fan: &RawFanStatus) {
+        let sample = Sample {
+            duty: fan
+                .fans
+                .iter()
+                .map(|f| f.duty_pct.unwrap_or(0) as f32)
+                .collect(),
+            rpm: fan.fans.iter().map(|f| f.rpm.unwrap_or(0) as f32).collect(),
+            cpu_c: fan.cpu_temp_c.map(|t| t as f32),
+            gpu_c: fan.gpu_temp_c.map(|t| t as f32),
+        };
+        if self.samples.len() == self.cap {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(sample);
+    }
+
+    pub fn len(&self) -> usize {
+        self.samples.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.samples.is_empty()
+    }
+
+    /// One series out of the ring, oldest first. `f` picks which reading of
+    /// each sample; samples where it is missing are dropped, so a temperature
+    /// that the daemon did not report does not become a zero on the graph.
+    pub fn series<T>(&self, f: impl Fn(&Sample) -> Option<T>) -> Vec<T> {
+        self.samples.iter().filter_map(f).collect()
+    }
+
+    /// Fan `index`'s rpm over time.
+    pub fn rpm(&self, index: usize) -> Vec<f32> {
+        self.series(|s| s.rpm.get(index).copied())
+    }
+
+    /// Temperature `index` (0 = CPU, 1 = GPU) over time.
+    pub fn temp(&self, index: usize) -> Vec<f32> {
+        self.series(|s| if index == 0 { s.cpu_c } else { s.gpu_c })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A panel is expensive to build in a unit test (it reads the hardware), so
+    /// the clamping is tested as the free function it is.
+    use super::clamp_curve_point as clamp;
+
+    #[test]
+    fn a_point_cannot_be_dragged_past_its_neighbours() {
+        let curve = [[50, 25], [65, 40], [75, 60], [85, 80], [95, 100]];
+        // Dragging the middle point far to the left stops one degree above its
+        // predecessor; the same drag upward stops at the duty of the point to
+        // its right, because duty may not fall as the curve heats — the two
+        // bounds belong to the same drag, not to two different ones.
+        assert_eq!(clamp(&curve, 2, 10., 90.), [66, 80]);
+        // And the other way: one degree below its successor's temperature, no
+        // lower than its predecessor's duty.
+        assert_eq!(clamp(&curve, 2, 200., 10.), [84, 40]);
+    }
+
+    #[test]
+    fn duty_never_falls_as_the_curve_heats() {
+        let curve = [[50, 25], [65, 40], [75, 60], [85, 80], [95, 100]];
+        // Pulling the last point's duty down stops at its predecessor's.
+        assert_eq!(clamp(&curve, 4, 95., 0.), [95, 80]);
+        // The first point has no predecessor, so only the absolute bounds apply.
+        assert_eq!(clamp(&curve, 0, -50., -50.), [20, 0]);
+        assert_eq!(clamp(&curve, 4, 500., 500.), [110, 100]);
+    }
+
+    #[test]
+    fn every_clamped_point_survives_the_validators() {
+        let mut curve = [[50, 25], [65, 40], [75, 60], [85, 80], [95, 100]];
+        // Drag each point hard in each direction: whatever the pointer does, the
+        // curve the CLI would be handed has to stay legal.
+        for i in 0..curve.len() {
+            for (temp, duty) in [(0., 0.), (200., 100.), (10., 90.), (200., 0.)] {
+                curve[i] = clamp(&curve, i, temp, duty);
+                assert_eq!(
+                    crate::backend::fan::curve_problem(&curve),
+                    None,
+                    "point {i} dragged to {temp}/{duty} broke the curve"
+                );
+            }
+        }
+    }
+
+    fn snapshot(duty: u8, rpm: u32, cpu: i32) -> RawFanStatus {
+        serde_json::from_str(&format!(
+            r#"{{"mode":"auto","backend":"ec","driver":true,"manual_duty":null,
+                 "curve":null,"custom_curve":[],"presets":{{}},
+                 "fans":[{{"label":"CPU","duty_pct":{duty},"rpm":{rpm}}},
+                         {{"label":"GPU","duty_pct":{duty},"rpm":{rpm}}}],
+                 "cpu_temp_c":{cpu},"gpu_temp_c":40,"ceiling_c":100,
+                 "daemon":true,"age_s":1,"stale":false}}"#
+        ))
+        .expect("snapshot parses")
+    }
+
+    #[test]
+    fn the_ring_keeps_only_the_last_window() {
+        let mut history = History::new();
+        for i in 0..History::CAP + 10 {
+            history.record(&snapshot(50, 1000 + i as u32, 50));
+        }
+        assert_eq!(history.len(), History::CAP);
+        // Oldest first: the ring dropped the first ten readings.
+        assert_eq!(history.rpm(0).first().copied(), Some((1000 + 10) as f32));
+        assert_eq!(
+            history.rpm(0).last().copied(),
+            Some((1000 + History::CAP + 9) as f32)
+        );
+    }
+
+    #[test]
+    fn every_fan_gets_its_own_series() {
+        let mut history = History::new();
+        history.record(&snapshot(30, 1200, 45));
+        history.record(&snapshot(80, 4800, 61));
+        assert_eq!(history.rpm(0), vec![1200., 4800.]);
+        assert_eq!(history.temp(0), vec![45., 61.]);
+        assert_eq!(history.temp(1), vec![40., 40.]);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Views
@@ -89,14 +266,33 @@ pub struct Panel {
     pub fan: Option<RawFanStatus>,
     pub fan_error: Option<String>,
     pub watchdog: Option<bool>,
+    /// Readings behind the gauges, fed by the same poll that sets `fan`.
+    pub history: History,
     pub duty: Entity<gpui_kit::component::slider::SliderState>,
     /// curve editor points, 5 × (temp °C, duty %)
-    pub curve: [[u32; 2]; 5],
+    pub curve: [Point; 5],
     pub curve_temp: Vec<Entity<gpui_kit::component::slider::SliderState>>,
     pub curve_duty: Vec<Entity<gpui_kit::component::slider::SliderState>>,
     pub curve_dirty: bool,
+    /// Which curve point the pointer is dragging on the graph, if any.
+    pub curve_drag: Option<usize>,
 
     // infra
+    /// One focus handle per sidebar row. The rows are plain divs, so without
+    /// these they cannot be reached with the keyboard at all.
+    pub nav_focus: [FocusHandle; 4],
+    /// One per fan-mode chip, same reason as `nav_focus`.
+    pub mode_focus: Vec<FocusHandle>,
+    /// Bumped on every view change. The fade is keyed on it, so returning to a
+    /// view already seen replays the animation instead of resuming a stale one.
+    pub view_seq: u64,
+    /// Which sidebar row the pointer is over, if any. Hover styling cannot be
+    /// transitioned by the element itself — `.hover()` applies its styles the
+    /// instant the hitbox flips — so the row is told where the pointer is and
+    /// eases toward that value itself.
+    pub hover_nav: Option<usize>,
+    /// Same, for the fan-mode chips.
+    pub hover_mode: Option<usize>,
     pub tasks: Vec<Task<()>>,
     pub subs: Vec<Subscription>,
     /// transient error from the last action, cleared on the next success
@@ -104,8 +300,44 @@ pub struct Panel {
     pub busy: bool,
 }
 
+/// Clamp a proposed curve point so the result still passes `curve_problem`.
+///
+/// Temperatures must strictly rise and duty must never fall as it heats, or
+/// `g5fan curve set` refuses the result and the editor is left showing
+/// something the daemon will not accept. Clamping to the neighbours is what
+/// stops a drag from walking a point through the one beside it.
+pub fn clamp_curve_point(curve: &[Point], i: usize, temp: f32, duty: f32) -> Point {
+    let mut t = temp.clamp(20., 110.);
+    let mut d = duty.clamp(0., 100.);
+    if i > 0 {
+        t = t.max(curve[i - 1][0] as f32 + 1.);
+        d = d.max(curve[i - 1][1] as f32);
+    }
+    if i + 1 < curve.len() {
+        t = t.min(curve[i + 1][0] as f32 - 1.);
+        d = d.min(curve[i + 1][1] as f32);
+    }
+    [t.round() as i32, d.round() as i32]
+}
+
 impl Panel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut panel = Self::build(window, cx, View::Home);
+        panel.wire_sliders(cx);
+        panel.start_loops(cx);
+        panel.refresh_profiles(cx);
+        panel
+    }
+
+    /// Same panel, pinned to `view` and without the polling loops or the
+    /// profile fetch. `tests/snapshot.rs` uses this to render one view to a
+    /// PNG: a background loop would keep the headless test dispatcher busy and
+    /// the profile fetch would race the first frame.
+    pub fn new_for_snapshot(window: &mut Window, cx: &mut Context<Self>, view: View) -> Self {
+        Self::build(window, cx, view)
+    }
+
+    fn build(window: &mut Window, cx: &mut Context<Self>, view: View) -> Self {
         // Both reads are plain file/process access, done once synchronously so
         // the sliders can be seeded with the real values. The startup cost is
         // one `g5fan status --cached` (~30 ms); the keyboard read is file I/O.
@@ -137,7 +369,7 @@ impl Panel {
             .ok()
             .map(|f| f.custom_curve.clone())
             .unwrap_or_else(|| vec![[50, 25], [65, 40], [75, 60], [85, 80], [95, 100]]);
-        let mut curve = [[50u32, 25], [65, 40], [75, 60], [85, 80], [95, 100]];
+        let mut curve: [Point; 5] = [[50, 25], [65, 40], [75, 60], [85, 80], [95, 100]];
         for (i, point) in custom.iter().take(5).enumerate() {
             curve[i] = [point[0].min(110), point[1].min(100)];
         }
@@ -154,8 +386,16 @@ impl Panel {
             cx,
         );
 
-        let mut panel = Panel {
-            view: View::Home,
+        // Seed the trend from the snapshot the sliders were seeded from, so the
+        // first frame already has something to draw rather than a flat line
+        // that fills in three seconds later.
+        let mut history = History::new();
+        if let Ok(snapshot) = fan.as_ref() {
+            history.record(snapshot);
+        }
+
+        Panel {
+            view,
             kbd,
             brightness,
             ch_red,
@@ -169,21 +409,62 @@ impl Panel {
             fan: fan.ok(),
             fan_error: None,
             watchdog: None,
+            history,
             duty,
             curve,
             curve_temp,
             curve_duty,
             curve_dirty: false,
+            curve_drag: None,
+            // `cx.focus_handle()` starts with `tab_stop: false`, which keeps the
+            // handle out of the tab order even though `track_focus` puts it in the
+            // tab-stop map. Without this, Tab walks straight past the sidebar.
+            nav_focus: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
+            mode_focus: FanMode::UI_MODES
+                .iter()
+                .map(|_| cx.focus_handle().tab_stop(true))
+                .collect(),
+            view_seq: 0,
+            hover_nav: None,
+            hover_mode: None,
             tasks: Vec::new(),
             subs: Vec::new(),
             err: None,
             busy: false,
-        };
+        }
+    }
 
-        panel.wire_sliders(cx);
-        panel.start_loops(cx);
-        panel.refresh_profiles(cx);
-        panel
+    /// Switch to `view` and arm the fade.
+    ///
+    /// Every caller goes through here rather than assigning `self.view`: the
+    /// mouse handler, the keyboard handler and the snapshot tests each look the
+    /// same from the outside, and a switch that forgot to bump `view_seq` would
+    /// silently not animate.
+    pub fn set_view(&mut self, view: View, cx: &mut Context<Self>) {
+        if self.view == view {
+            return;
+        }
+        self.view = view;
+        self.view_seq += 1;
+        cx.notify();
+    }
+
+    /// Record which sidebar row the pointer is over, for the hover transition.
+    pub fn set_hover_nav(&mut self, index: usize, on: bool, cx: &mut Context<Self>) {
+        let next = on.then_some(index);
+        if self.hover_nav != next {
+            self.hover_nav = next;
+            cx.notify();
+        }
+    }
+
+    /// Same, for the fan-mode chips.
+    pub fn set_hover_mode(&mut self, index: usize, on: bool, cx: &mut Context<Self>) {
+        let next = on.then_some(index);
+        if self.hover_mode != next {
+            self.hover_mode = next;
+            cx.notify();
+        }
     }
 
     // -- slider wiring --------------------------------------------------------
@@ -306,7 +587,7 @@ impl Panel {
     fn sync_curve_point(&mut self, i: usize, cx: &mut Context<Self>) {
         let t = self.curve_temp[i].read(cx).value().start();
         let d = self.curve_duty[i].read(cx).value().start();
-        self.curve[i] = [t as u32, d as u32];
+        self.curve[i] = [t as i32, d as i32];
         self.curve_dirty = true;
         cx.notify();
     }
@@ -388,10 +669,85 @@ impl Panel {
         );
     }
 
+    /// Move curve point `i` to (`temp`, `duty`), keeping the curve valid.
+    ///
+    /// The graph enforces [`clamp_curve_point`] while the pointer is down, so
+    /// the editor can never hold a curve the daemon would refuse.
+    pub fn move_curve_point(
+        &mut self,
+        i: usize,
+        temp: f32,
+        duty: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let [t, d] = clamp_curve_point(&self.curve, i, temp, duty);
+        self.curve[i] = [t, d];
+        // The sliders are the keyboard path onto the same five values; leaving
+        // them behind would show one curve while another was being edited.
+        self.curve_temp[i].update(cx, |s, cx| s.set_value(t as f32, window, cx));
+        self.curve_duty[i].update(cx, |s, cx| s.set_value(d as f32, window, cx));
+        self.curve_dirty = true;
+        cx.notify();
+    }
+
+    /// Pick up curve point `i` for dragging.
+    pub fn begin_curve_drag(&mut self, i: usize, cx: &mut Context<Self>) {
+        self.curve_drag = Some(i);
+        cx.notify();
+    }
+
+    pub fn end_curve_drag(&mut self, cx: &mut Context<Self>) {
+        if self.curve_drag.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Fill the trend with a synthetic ramp built from the current snapshot.
+    ///
+    /// The real history needs a minute of uptime to have anything to draw, so
+    /// without this the sparklines would never appear in a snapshot and the one
+    /// piece of the gauges that cannot be checked from the code would be the
+    /// one nobody ever looked at. `tests/snapshot.rs` calls it; nothing in the
+    /// app does.
+    pub fn seed_history(&mut self, steps: usize) {
+        let Some(snapshot) = self.fan.clone() else {
+            return;
+        };
+        self.history = History::new();
+        let mut previous = snapshot.clone();
+        for step in 0..steps {
+            // A plausible shape rather than noise: idle, then a load, then back
+            // down. What is being checked is that the line is drawn at all.
+            let phase = step as f32 / steps.max(1) as f32;
+            let wave = (phase * std::f32::consts::PI * 2.).sin();
+            let mut next = previous.clone();
+            for (i, fan) in next.fans.iter_mut().enumerate() {
+                let swing = 10. + 22. * wave + i as f32 * 6.;
+                fan.duty_pct = Some((50. + swing).clamp(0., 100.) as u8);
+                fan.rpm = Some((2400. + 900. * wave + i as f32 * 400.).max(0.) as u32);
+            }
+            next.cpu_temp_c = Some((52. + 14. * wave).round() as i32);
+            next.gpu_temp_c = Some((48. + 9. * wave).round() as i32);
+            self.history.record(&next);
+            previous = next;
+        }
+    }
+
+    /// Record a fresh fan snapshot.
+    ///
+    /// Everything that lands a snapshot goes through here rather than assigning
+    /// `fan` directly: the gauges' trend is fed from the same value, and a poll
+    /// that skipped it would leave a flat line nobody could explain.
+    pub fn set_fan(&mut self, fan: RawFanStatus) {
+        self.history.record(&fan);
+        self.fan = Some(fan);
+    }
+
     pub fn poll_fans_now(&mut self, cx: &mut Context<Self>) {
         self.dispatch(cx, fan_read_cached, |panel, result, _cx| match result {
             Ok(fan) => {
-                panel.fan = Some(fan);
+                panel.set_fan(fan);
                 panel.fan_error = None;
             }
             Err(e) => panel.fan_error = Some(e),
@@ -437,7 +793,7 @@ impl Panel {
                 let _ = this.update(cx, |panel, cx| {
                     match fan {
                         Ok(fan) => {
-                            panel.fan = Some(fan);
+                            panel.set_fan(fan);
                             panel.fan_error = None;
                         }
                         Err(e) => panel.fan_error = Some(e),
@@ -467,7 +823,7 @@ impl Panel {
     /// Write the edited curve and select custom, mirroring the web panel's
     /// "Save and use" button. Validation mirrors `g5fan curve set`.
     pub fn apply_curve(&mut self, cx: &mut Context<Self>) {
-        let points: Vec<[u32; 2]> = self.curve.to_vec();
+        let points: Vec<Point> = self.curve.to_vec();
         if let Some(problem) = backend::fan::curve_problem(&points) {
             self.err = Some(problem);
             cx.notify();

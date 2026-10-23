@@ -470,5 +470,84 @@ class TestSnapshot(unittest.TestCase):
         self.assertIsNotNone(g5fan.read_snapshot())
 
 
+class TestSharedVectors(unittest.TestCase):
+    """The same vector file the Rust side reads.
+
+    `crates/core/testdata/curve_vectors.json` is generated from this
+    implementation and read by both `crates/core/tests/vectors.rs` and here.
+    The two used to be held together by a comment claiming the expectations
+    matched, which is how the panel came to round a curve tie away from zero
+    while the daemon rounded it to even. A divergence now fails a test on
+    whichever side moved.
+
+    Since the file is generated from *this* implementation, what this class
+    pins is that Python has not moved either — the Rust side is the one that
+    could drift, and `vectors.rs` is where it would be caught.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        path = os.path.join(ROOT, "crates", "core", "testdata",
+                            "curve_vectors.json")
+        with open(path) as f:
+            cls.vectors = json.load(f)
+
+    def test_the_presets_are_the_ones_in_the_vectors(self):
+        curves = self.vectors["curves"]
+        for name, points in g5fan.PROFILES.items():
+            with self.subTest(preset=name):
+                self.assertEqual(curves[name], [list(p) for p in points])
+
+    def test_every_degree_of_every_curve(self):
+        low, high = self.vectors["duty_sweep_temps"]
+        for name, expected in self.vectors["duty"].items():
+            pts = tuple(tuple(p) for p in self.vectors["curves"][name])
+            self.assertEqual(len(expected), high - low + 1, name)
+            for temp, want in zip(range(low, high + 1), expected):
+                with self.subTest(curve=name, temp=temp):
+                    self.assertEqual(g5fan.duty_for(pts, temp), want)
+
+    def test_the_curve_tie_rounds_to_even(self):
+        pts = tuple(tuple(p) for p in self.vectors["curves"]["tie"])
+        self.assertEqual(g5fan.duty_for(pts, 41), 10)
+        self.assertEqual(g5fan.duty_for(pts, 42), 11)
+
+    def test_unit_conversions(self):
+        for case in self.vectors["pct_to_byte"]:
+            with self.subTest(pct=case["pct"]):
+                self.assertEqual(g5fan.pct_to_byte(case["pct"]), case["byte"])
+        for case in self.vectors["byte_to_pct"]:
+            with self.subTest(byte=case["byte"]):
+                self.assertEqual(g5fan.byte_to_pct(case["byte"]), case["pct"])
+
+    def test_tacho_periods(self):
+        for case in self.vectors["rpm_from_tach"]:
+            with self.subTest(period=case["period"]):
+                self.assertEqual(g5fan.rpm_from_tach(case["period"]), case["rpm"])
+
+    def test_valid_and_invalid_curves(self):
+        for points in self.vectors["valid_curves"]:
+            pts = tuple(tuple(p) for p in points)
+            with self.subTest(points=points):
+                self.assertEqual(g5fan.validate_curve(pts), pts)
+        for case in self.vectors["invalid_curves"]:
+            pts = tuple(tuple(p) for p in case["points"])
+            with self.subTest(points=case["points"]):
+                with self.assertRaises(ValueError) as cm:
+                    g5fan.validate_curve(pts)
+                # The Rust side must produce this sentence verbatim.
+                self.assertEqual(str(cm.exception), case["message"])
+
+    def test_points(self):
+        for case in self.vectors["points"]:
+            with self.subTest(text=case["text"]):
+                self.assertEqual(g5fan.parse_point(case["text"]),
+                                 tuple(case["point"]))
+        for text in self.vectors["bad_points"]:
+            with self.subTest(text=text):
+                with self.assertRaises(ValueError):
+                    g5fan.parse_point(text)
+
+
 if __name__ == "__main__":
     unittest.main()

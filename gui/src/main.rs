@@ -13,15 +13,9 @@
 // and pins the matching gpui-pre-* snapshot crates, so this file needs no
 // direct `gpui` dependency.
 
-mod backend;
-mod panel;
-mod theme;
-mod views;
-mod widgets;
-
 use gpui_kit::{App, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 
-use panel::{Panel, View};
+use g5kbd_gui::panel::{Panel, View};
 
 fn main() {
     // `gpui_kit::application()` opens the platform backend (Wayland/X11 on
@@ -31,10 +25,24 @@ fn main() {
     gpui_kit::application().run(|cx: &mut App| {
         gpui_kit::init(cx);
 
+        // `gui/src/theme.rs` is a fixed dark palette, so the component widgets
+        // have to follow it instead of the desktop's light mode. Left alone,
+        // the kit follows the system appearance and a light-themed desktop
+        // renders white buttons inside our dark cards.
+        g5kbd_gui::theme::apply_kit_theme(cx);
+
+        // 720×600 is roughly half a large screen, which is the narrowest window
+        // `layout::Breakpoint` treats as the compact one-column rail layout.
+        // Below it the keyboard preview stops being legible, so the compositor
+        // is asked not to go there rather than letting the content clip.
         let bounds = Bounds::centered(None, size(px(1040.), px(680.)), cx);
         gpui_kit::open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
+                // The panel reads the window width every frame and rearranges
+                // itself, so it has to be resizable in the first place.
+                is_resizable: true,
+                window_min_size: Some(size(px(720.), px(600.))),
                 titlebar: Some(TitlebarOptions {
                     title: Some("g5kbd — Gigabyte G5".into()),
                     ..Default::default()

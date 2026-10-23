@@ -1,23 +1,18 @@
 version: 2
 
 updates:
-  # Frontend (React + Tailwind + Vite) — lockfile lives in gui/
-  - package-ecosystem: npm
-    directory: /gui
-    schedule:
-      interval: weekly
-      day: monday
-      time: "06:00"
-    open-pull-requests-limit: 10
-    groups:
-      minor-and-patch:
-        update-types:
-          - minor
-          - patch
-
-  # Rust core (Tauri)
+  # The Rust dependencies, watched at the workspace root: that is where the
+  # lockfile lives now that the panel and the shared core are one workspace
+  # (`/gui` has no Cargo.lock of its own any more, so pointing there would
+  # reintroduce the failure this entry was fixed for).
+  #
+  # There used to be two more entries here — npm in /gui and cargo in
+  # /gui/src-tauri — for the Tauri/webview panel. The GPUI rewrite (PR #16)
+  # deleted both trees and left the entries behind, so every weekly run since
+  # failed with "/gui/package.json not found" and "/gui/src-tauri/Cargo.toml
+  # not found". There is no npm tree in this repository any more.
   - package-ecosystem: cargo
-    directory: /gui/src-tauri
+    directory: /
     schedule:
       interval: weekly
       day: monday

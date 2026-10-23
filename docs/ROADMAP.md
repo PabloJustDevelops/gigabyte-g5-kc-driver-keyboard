@@ -142,9 +142,12 @@ Method: `sudo ./probe-fan.sh` walks the modes by ear; a programmed load
 
 ### 7. GUI
 
-* **Curve graph.** The fan curve is currently five pairs of sliders. A small
-  SVG chart of the ramp (with the live temperature marked on it) would say
-  more than the sliders do.
+* ~~**Curve graph.**~~ Done: the curve is a graph of five draggable points,
+  with the live CPU/GPU temperatures marked on the ramp and the area under it
+  shaded. The sliders remain underneath as the keyboard path. See
+  `docs/VISUAL-REWORK.md` §10 (Phase 8). Left over from it: at the shipped
+  1040 × 680 the Fans view scrolls and the curve card starts below the fold —
+  worth a layout decision, not a rewrite.
 * **Effects parity.** Drop-in `breathe`/`cycle` config is done, but the
   firmware takes one colour for the whole keyboard, so there is no per-zone
   editor to build, and the preview does not yet animate at the effect's
@@ -154,35 +157,72 @@ Method: `sudo ./probe-fan.sh` walks the modes by ear; a programmed load
   installed)". That deserves a real, clickable "authenticate" affordance.
 * **A tray/indicator applet** showing mode + temperature, since the panel is
   not always open.
-* **The GPUI panel has never been through a visual test.** Porting the UI from
-  the Tauri/webview build to native GPUI removed the browser and the Node
-  toolchain, but the window is still build- and unit-verified only: nobody has
-  clicked through it on a real screen. Everything below the panel (CLIs,
-  daemon, driver) is exercised on hardware as before.
+* **The GPUI panel has never been through a visual test on real glass.** The
+  port from the Tauri/webview build to native GPUI removed the browser and the
+  Node toolchain, and the snapshot harness now renders every view, drags a
+  curve point and checks the fade as pixels — but that is still an offscreen
+  renderer: nobody has clicked through the window on a real screen. Everything
+  below the panel (CLIs, daemon, driver) is exercised on hardware as before.
 * **Curve editing is fixed at five points.** `g5fan curve set` takes 2..5 and
   the old web panel could add and remove points; the GPUI editor always shows
   five. The CLI remains the way to set a shorter curve.
 
 ### 8. Packaging and CI
 
-* **`PKGBUILD`'s `source` array is maintained by hand** (every panel source
-  file, the docs, each systemd unit). Adding a file and forgetting the array
-  is a silent packaging bug — the `SKIP` sums hide it. A CI check that every
-  file listed under `gui/src`/`docs`/`systemd` appears in `source` (and vice
-  versa) would end it.
+* ~~**`PKGBUILD`'s `source` array is maintained by hand**~~ Done:
+  `tools/check_packaging.py` compares the array against the tree in both
+  directions and runs in the `python` CI job, together with a check that
+  `install.sh` installs every doc. It found two real bugs the day it was
+  written: `docs/VISUAL-REWORK.md` was in neither installer, and
+  `systemd/g5kbd-kmod-load.conf` (loads `g5kbd`) and
+  `systemd/g5kbd-modules-load.conf` (loads `ec_sys`) both claimed
+  `/etc/modules-load.d/g5kbd.conf`, so each installer wrote one of the two and
+  the package never loaded the driver at boot. They are now one file.
 * **The CI kernel has `CONFIG_LEDS_CLASS_MULTICOLOR` disabled**, so the
   kernel job builds with `KBUILD_MODPOST_WARN=1` and can never link. Build
   against a real kernel config (container or an Arch image) to get a green
   modpost.
-* **Nothing drives the panel's own code.** The rewrite into Rust did bring
-  unit tests (`gui/src/backend/fan.rs` pins the `g5fan status --json` field
-  contract and mirrors the CLI's curve validation; `theme.rs` covers hex
-  parsing), and `cargo clippy -D warnings` now watches the panel. What is
-  still missing is anything that renders a view and asserts it: GPUI ships a
-  test harness (`gpui_kit::test`), and a test that mounts `Panel` and checks
-  the four views build would catch the next wiring mistake.
-* **No AUR package and no GitHub release automation for the CLI alone**;
-  `release.yml` builds the `.deb` + binary on a `v*` tag.
+* **Nothing drove the panel's own code** — half done. `tests/snapshot.rs`
+  mounts the real `Panel` in a headless window and asserts what it renders:
+  all four views build, the sidebar works from the keyboard, Tab enters the
+  panel, a view switch fades, a 720 px window collapses the rail, and a curve
+  point can be dragged through the graph and stays legal. Unit tests
+  (in `g5core`, which both the panel and the daemon link: the
+  `g5fan status --json` field contract, the curve maths and the unit
+  conversions; `theme.rs` covers hex parsing) and
+  `cargo clippy -D warnings` cover the rest. What is still missing is a *pixel*
+  assertion: the snapshots are meant to be looked at, so a regression that
+  stays plausible-looking passes CI.
+* ~~**Dependabot pointed at trees that no longer exist**~~ Done. The GPUI
+  rewrite deleted `gui/package.json` and `gui/src-tauri/`, and the two entries
+  left in `.github/dependabot.yml` failed every weekly run with
+  "package.json not found". The config now watches `/gui` for cargo and the
+  Actions in the workflows, which are the only dependency trees in the repo.
+* ~~**The curve maths existed twice**~~ Done. The root `Cargo.toml` is a cargo
+  workspace holding `crates/core` (curve maths, unit conversions, the EC
+  register map, the state schema, the `status --json` contract) and the panel,
+  and `g5core` is the code both link. The Python side now asserts against the
+  same file the Rust side does (`crates/core/testdata/curve_vectors.json`, read
+  by `crates/core/tests/vectors.rs` and `tests/test_g5fan.py`), so "the two
+  agree" is a test result instead of a comment. It caught a real divergence the
+  day it landed: the panel rounded a curve tie away from zero where the daemon
+  rounds it to even, so on the curve `(40,10) (42,11)` at 41 °C it drew 11 %
+  while the daemon asked the fans for 10 %.
+* **The two CLIs are still Python.** `crates/core` is only the first step of
+  the port; next comes `g5kbd` (the simpler one: no daemon, no thermal policy),
+  then `g5fan` with its `Supervisor`, and only then does the packaging stop
+  depending on `python`. The core went first on purpose: it is the part whose
+  duplication had already produced a bug, and it is what makes the ports
+  mechanical rather than risky.
+* ~~**`release.yml` was Tauri-era dead code**~~ Done. It installed
+  webkit2gtk/GTK, set up Node against `gui/package-lock.json` and built from
+  `gui/src-tauri` — none of which exist since the GPUI rewrite, so a `v*` tag
+  could only fail. It now builds the panel from the workspace and publishes the
+  binary plus a tarball that carries the desktop entry and icons. The `.deb`
+  went with Tauri: a repackaged Tauri bundle is not something that job could
+  build or test, so the tarball replaces it until there is a real Debian
+  packaging step.
+* **No AUR package and no release automation for the CLI alone**;
 * `install.sh` used to leave the docs behind (only the PKGBUILD installed
   them, and to a path the systemd unit did not point at); both now install
   them to `/usr/share/doc/g5kbd/`.

@@ -8,6 +8,11 @@ on:
 permissions:
   contents: write
 
+# This job used to be the Tauri panel's: it installed webkit2gtk/GTK, set up
+# Node against `gui/package-lock.json`, ran `npm run tauri -- build` and copied
+# the bundle out of `gui/src-tauri/target`. The GPUI rewrite deleted every one
+# of those trees, so a `v*` tag could only fail — the job was dead, not just
+# stale. It now builds what actually exists: one cargo workspace, one binary.
 jobs:
   release:
     name: Build and publish ${{ github.ref_name }}
@@ -15,44 +20,61 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install Tauri system dependencies
+      - name: Install GPUI system dependencies
+        # The same set the `rust` job in ci.yml installs: what gpui-pre-platform
+        # needs to link on Linux (X11 + Wayland clients, their xkbcommon
+        # counterparts, fontconfig) plus pkg-config to find them. Vulkan is
+        # loaded at runtime, so only the loader/headers are needed.
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            patchelf \
+            pkg-config \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libxcb1-dev \
+            libxcb-xkb-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libvulkan-dev \
             libssl-dev \
-            libxdo-dev \
             file
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: gui/package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: gui/src-tauri
+          workspaces: .
 
-      - name: Build release bundles
-        working-directory: gui
-        run: |
-          npm ci
-          # beforeBuildCommand runs vite, then cargo builds the release binary
-          # with the frontend embedded (custom-protocol feature).
-          npm run tauri -- build --bundles deb
+      - name: Build the panel
+        # From the workspace root, so the shared core is built from source
+        # rather than from a copy of the curve maths kept in the panel.
+        run: cargo build --release -p g5kbd-gui
 
       - name: Stage artifacts
+        # A tarball with the binary *and* the desktop entry + icons, laid out
+        # under a staging root so it can be unpacked straight onto / — the panel
+        # is invisible in the application menu without the .desktop file, which
+        # a bare binary does not carry.
         run: |
-          mkdir -p dist-release
-          cp gui/src-tauri/target/release/g5kbd-gui dist-release/
-          cp gui/src-tauri/target/release/bundle/deb/*.deb dist-release/
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          stage="g5kbd-gui-$version"
+          mkdir -p "dist-release/$stage/usr/bin" \
+                   "dist-release/$stage/usr/share/applications" \
+                   "dist-release/$stage/usr/share/icons/hicolor/128x128/apps" \
+                   "dist-release/$stage/usr/share/icons/hicolor/32x32/apps"
+          install -m755 target/release/g5kbd-gui "dist-release/$stage/usr/bin/g5kbd-gui"
+          install -m644 gui/g5kbd-gui.desktop \
+            "dist-release/$stage/usr/share/applications/g5kbd-gui.desktop"
+          install -m644 gui/icons/128x128.png \
+            "dist-release/$stage/usr/share/icons/hicolor/128x128/apps/g5kbd.png"
+          install -m644 gui/icons/32x32.png \
+            "dist-release/$stage/usr/share/icons/hicolor/32x32/apps/g5kbd.png"
+          install -Dm755 target/release/g5kbd-gui dist-release/g5kbd-gui
+          tar -C dist-release -czf "dist-release/$stage.tar.gz" "$stage"
+          rm -rf "dist-release/$stage"
+          ls -l dist-release
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v3
@@ -62,9 +84,17 @@ jobs:
           body: |
             ## g5kbd ${{ github.ref_name }}
 
-            - `g5kbd-gui` — standalone Tauri binary (needs the `g5kbd` CLI
-              installed alongside: `sudo ./install.sh`)
-            - `*.deb` — Debian/Ubuntu bundle of the GUI
+            - `g5kbd-gui` — the panel, a single Rust binary. It drives whatever
+              `g5kbd`/`g5fan` are on `$PATH`, so install the CLIs too:
+              `sudo ./install.sh`.
+            - `g5kbd-gui-*.tar.gz` — the same binary with the desktop entry and
+              icons, laid out to unpack onto `/`:
+              `sudo tar -xzf g5kbd-gui-*.tar.gz -C /`.
+
+            There is no `.deb` here any more. The old one was a Tauri bundle
+            (`npm run tauri -- build`), and that toolchain is gone; rather than
+            publish a repackaged `.deb` this workflow cannot build and test,
+            it ships the tarball above. Arch users should use the `PKGBUILD`.
 
             The kernel module is not shipped in releases: it must be built for
             the running kernel (`sudo ./install.sh` or the PKGBUILD does it).

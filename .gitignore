@@ -15,8 +15,8 @@ pkg/
 *.pkg.tar.*
 *.src.tar.*
 
-# panel (gpui / cargo)
-gui/target/
+# cargo: one workspace, one target directory (the panel, g5core and the CLIs)
+/target/
 
 # leftovers from the removed web build. `sudo ./install.sh` used to run
 # npm install as root, so these trees are root-owned and cannot be deleted by

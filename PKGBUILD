@@ -13,7 +13,21 @@ license=('MIT' 'GPL2')
 # runtime, so libwayland-client is a hard dependency rather than optional.
 depends=('python' 'vulkan-icd-loader' 'libxkbcommon' 'libxkbcommon-x11' 'libxcb' 'wayland' 'fontconfig')
 makedepends=('linux-headers' 'rust' 'cargo' 'make' 'gcc' 'clang' 'lld' 'pkgconf' 'wayland' 'libxkbcommon' 'libxcb' 'fontconfig' 'freetype2' 'vulkan-headers')
-source=("src/g5kbd.py"
+source=(
+        # One cargo workspace at the root: the panel, the shared core and (soon)
+        # the two CLIs are built by a single `cargo build` in build().
+        "Cargo.toml"
+        "Cargo.lock"
+        "crates/core/Cargo.toml"
+        "crates/core/src/lib.rs"
+        "crates/core/src/cli.rs"
+        "crates/core/src/ec.rs"
+        "crates/core/src/fan.rs"
+        "crates/core/src/state.rs"
+        "crates/core/src/units.rs"
+        "crates/core/tests/vectors.rs"
+        "crates/core/testdata/curve_vectors.json"
+        "src/g5kbd.py"
         "src/g5fan.py"
         "systemd/g5kbd.service"
         "systemd/g5fan-watchdog.service"
@@ -25,8 +39,10 @@ source=("src/g5kbd.py"
         "kernel/Makefile"
         "kernel/99-g5kbd.rules"
         "gui/Cargo.toml"
-        "gui/Cargo.lock"
+        "gui/src/layout.rs"
+        "gui/src/lib.rs"
         "gui/src/main.rs"
+        "gui/src/motion.rs"
         "gui/src/panel.rs"
         "gui/src/views.rs"
         "gui/src/widgets.rs"
@@ -34,26 +50,41 @@ source=("src/g5kbd.py"
         "gui/src/backend/mod.rs"
         "gui/src/backend/kbd.rs"
         "gui/src/backend/fan.rs"
+        "gui/tests/snapshot.rs"
+        # IBM Plex is compiled into the binary (see theme.rs), so the panel
+        # does not depend on any font being installed system-wide. The OFL
+        # requires the licence to travel with the fonts.
+        "gui/fonts/IBMPlexSans-Regular.ttf"
+        "gui/fonts/IBMPlexSans-Bold.ttf"
+        "gui/fonts/IBMPlexMono-Regular.ttf"
+        "gui/fonts/OFL.txt"
         "gui/g5kbd-gui.desktop"
         "gui/icons/128x128.png"
         "gui/icons/32x32.png"
         "README.md"
         "docs/WINDOWS-RESEARCH.md"
         "docs/FAN-RESEARCH.md"
-        "docs/ROADMAP.md")
-sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
+        "docs/ROADMAP.md"
+        "docs/VISUAL-REWORK.md")
+sha256sums=(
             'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
             'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
-            'SKIP' 'SKIP' 'SKIP' 'SKIP')
+            'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
+            'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
+            'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
+            'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP'
+            'SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
 
 build() {
   # --- kernel module against the running kernel's headers ---
   cd "$srcdir/kernel"
   make || make CC=clang LLVM=1
-  # --- Panel: a plain cargo build. GPUI is compiled as part of the binary;
-  # there is no web frontend and no Node toolchain any more.
-  cd "$srcdir/gui"
-  cargo build --frozen --release
+  # --- Rust side: a plain cargo build from the workspace root. GPUI is
+  # compiled as part of the binary; there is no web frontend and no Node
+  # toolchain any more, and the shared core is a member rather than a second
+  # copy of the curve maths.
+  cd "$srcdir"
+  cargo build --frozen --release --workspace
 }
 
 package() {
@@ -65,13 +96,17 @@ package() {
   # --- CLI + GUI ---
   install -Dm755 "$srcdir/src/g5kbd.py" "$pkgdir/usr/bin/g5kbd"
   install -Dm755 "$srcdir/src/g5fan.py" "$pkgdir/usr/bin/g5fan"
-  install -Dm755 "$srcdir/gui/target/release/g5kbd-gui" \
+  # The workspace keeps one target directory at the repository root, so the
+  # panel binary is not under gui/ any more.
+  install -Dm755 "$srcdir/target/release/g5kbd-gui" \
     "$pkgdir/usr/bin/g5kbd-gui"
   # --- udev + systemd ---
   install -Dm644 "$srcdir/kernel/99-g5kbd.rules" \
     "$pkgdir/usr/lib/udev/rules.d/99-g5kbd.rules"
   install -Dm644 "$srcdir/systemd/g5kbd-ec.conf" \
     "$pkgdir/etc/modprobe.d/g5kbd.conf"
+  # g5kbd (driver) and ec_sys (the EC window g5fan reads). install.sh installs
+  # this same file to this same path — they used to ship one module each.
   install -Dm644 "$srcdir/systemd/g5kbd-modules-load.conf" \
     "$pkgdir/etc/modules-load.d/g5kbd.conf"
   install -Dm644 "$srcdir/systemd/g5kbd.service" \
@@ -101,4 +136,10 @@ package() {
     "$pkgdir/usr/share/doc/g5kbd/FAN-RESEARCH.md"
   install -Dm644 "$srcdir/docs/ROADMAP.md" \
     "$pkgdir/usr/share/doc/g5kbd/ROADMAP.md"
+  install -Dm644 "$srcdir/docs/VISUAL-REWORK.md" \
+    "$pkgdir/usr/share/doc/g5kbd/VISUAL-REWORK.md"
+  # The bundled IBM Plex faces are compiled into the binary; the SIL OFL 1.1
+  # requires the licence to be distributed with them.
+  install -Dm644 "$srcdir/gui/fonts/OFL.txt" \
+    "$pkgdir/usr/share/doc/g5kbd/fonts-OFL.txt"
 }

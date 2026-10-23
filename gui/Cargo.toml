@@ -5,20 +5,39 @@ description = "Gigabyte G5 keyboard backlight & fan control panel, built with GP
 edition = "2024"
 license = "MIT"
 
+# The panel lives in the library so `tests/snapshot.rs` can render the very
+# same views offscreen; the binary is only the window boilerplate.
+[lib]
+name = "g5kbd_gui"
+path = "src/lib.rs"
+
 [[bin]]
 name = "g5kbd-gui"
 path = "src/main.rs"
 
 [dependencies]
-# One dependency for GPUI + the styled component library (gpui_kit::* IS gpui;
+# The shared truth: the fan curve, the unit conversions, the EC register map and
+# the state schema. The panel and the two CLIs link the same code instead of
+# keeping two copies of the curve maths in step by hand.
+g5core = { path = "../crates/core" }
+# One dependency for GPUI + the visual component library (gpui_kit::* IS gpui;
 # the component widgets live under gpui_kit::component). gpui-kit pins the
 # matching gpui-pre-* snapshot crates itself, so nothing else is needed here.
 gpui-kit = "0.7.0"
+# Only for `accesskit::Role` on the bespoke controls (the sidebar rows and the
+# fan-mode chips are plain divs, not kit Buttons, so they carry no role and a
+# screen reader announces them as nothing). Same version gpui itself pins, so
+# cargo unifies them into one build. The feature flag matches gpui's.
+accesskit = { version = "0.24", features = ["enumn"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 libc = "0.2"
 
-[profile.release]
-# The panel is small and latency-sensitive (polls the fan daemon every 3 s);
-# opt-level 2 keeps the binary lean without the codegen-time of 3.
-opt-level = 2
+[dev-dependencies]
+# `gpui-kit/test-support` unlocks GPUI's headless app context, whose
+# `capture_screenshot` renders a frame to a texture without a display. Only
+# tests pull it in, so the shipped binary is unaffected.
+gpui-kit = { version = "0.7.0", features = ["test-support"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+# The release profile lives in the workspace root manifest: a profile in a
+# member is ignored by cargo.

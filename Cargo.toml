@@ -1,0 +1,18 @@
+# One workspace for the whole product: the GPUI panel, the shared core, and the
+# two CLIs that talk to the hardware.
+#
+# They live together because they share one truth: `g5core` owns the fan curve,
+# the unit conversions and the state schema, so the panel cannot draw a duty the
+# daemon would not apply. Before the workspace existed, `duty_for` and the curve
+# validation were implemented twice (once in `src/g5fan.py`, once in
+# `gui/src/backend/fan.rs`) and only a handwritten pair of test vectors held them
+# together.
+[workspace]
+resolver = "3"
+members = ["crates/core", "gui"]
+
+# The panel is small and latency-sensitive (polls the fan daemon every 3 s);
+# opt-level 2 keeps its binary lean without the codegen time of 3. It has to sit
+# at the workspace root: a profile in a member manifest is ignored.
+[profile.release]
+opt-level = 2

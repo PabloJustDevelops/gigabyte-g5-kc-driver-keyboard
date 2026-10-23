@@ -10,12 +10,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # One workspace means one job for the whole Rust side: the panel, the shared
+  # core and the CLIs are formatted, linted and tested together, and the curve
+  # vectors are checked by the half that runs here rather than by two suites
+  # that had to be kept in step by hand.
+  #
+  # The `name:` still says "Panel" even though the job now covers the whole
+  # workspace: branch protection on main requires that exact context, and a
+  # required context that stops being reported blocks every PR
+  # (`mergeStateStatus: BLOCKED`, no red check to point at). Rename the job and
+  # the protection rule in the same move — the rule can only be edited with a
+  # classic PAT or from Settings, the gh CLI OAuth token gets a 404 on it.
   panel:
     name: Panel (fmt + clippy + test)
     runs-on: ubuntu-24.04
-    defaults:
-      run:
-        working-directory: gui
     steps:
       - uses: actions/checkout@v7
       - name: Install GPUI system dependencies
@@ -43,10 +51,10 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: gui
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+          workspaces: .
+      - run: cargo fmt --check --all
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
 
   kernel:
     name: Kernel module build
@@ -100,7 +108,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Byte-compile
-        run: python -m py_compile src/g5kbd.py src/g5fan.py tools/ec.py
+        run: python -m py_compile src/g5kbd.py src/g5fan.py tools/ec.py tools/check_packaging.py
       - name: Unit tests (curve maths, validation, rpm conversion)
         run: python -m unittest discover -s tests -v
       - name: CLI smoke tests (fake backend, no hardware)
@@ -111,5 +119,9 @@ jobs:
           python src/g5fan.py curve set 50:25 65:40 75:60 85:80 95:100
           python src/g5fan.py silent
           python src/g5fan.py auto
+      - name: Packaging (PKGBUILD source array vs the tree)
+        # Every sum in PKGBUILD is SKIP, so a file that is never listed is not a
+        # build error — it is a package that quietly ships without it.
+        run: python tools/check_packaging.py
       - name: Shell syntax check
         run: bash -n install.sh probe-kb.sh probe-effects.sh probe-fan.sh systemd/system-sleep/g5kbd PKGBUILD

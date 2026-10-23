@@ -88,7 +88,8 @@ Only fan **changes** authenticate, through polkit, because the EC is
 root-only.
 
 To hack on the panel alone (no driver needed): install the CLIs with
-`sudo ./install.sh --no-gui`, then `cd gui && cargo run` — the panel drives
+`sudo ./install.sh --no-gui`, then `cargo run -p g5kbd-gui` from the repository
+root — the panel drives
 whatever `g5kbd`/`g5fan` are on `$PATH`. The first build compiles the GPUI tree
 and takes a few minutes; after that it is incremental.
 
@@ -368,10 +369,13 @@ each.
 ## Repo layout
 
 ```
+Cargo.toml                  the cargo workspace: the shared core + the panel
+crates/core/                the truth both halves link: curve maths, unit
+                            conversions, EC register map, state schema
 src/g5kbd.py                the CLI (LED-node or EC backend, effects engine)
 src/g5fan.py                fan CLI: modes, curve, telemetry, profiles, watchdog
 gui/                        native GPUI panel (one Rust binary)
-gui/src/views/PerformanceView.tsx   the Fans page
+gui/src/views.rs            the four views: Home, Lighting, Profiles, Fans
 kernel/g5kbd.c              ACPI driver: CLV0001 -> rgb:kbd + fan control
 kernel/Makefile, dkms.conf  build + DKMS packaging
 kernel/99-g5kbd.rules       udev rule (wheel group owns the LED node)
@@ -379,11 +383,13 @@ systemd/                    boot/suspend restore units, fan watchdog, modprobe
 polkit/                     lets the GUI authenticate for fan changes
 install.sh                  one-shot installer / uninstaller
 tools/ec.py                 raw EC probe utility (dump/read/write mailbox)
+tools/check_packaging.py    CI: PKGBUILD's source array vs the shipped tree
 probe-kb.sh                 guided hardware verification used during RE
 probe-fan.sh                the same, for the fan protocol
 docs/WINDOWS-RESEARCH.md    keyboard reverse-engineering write-up
 docs/FAN-RESEARCH.md        fan reverse-engineering write-up
 docs/ROADMAP.md             what is missing or unverified, with priorities
+docs/VISUAL-REWORK.md       the panel's visual rework: plan, decisions, status
 win/, reference/            extracted Windows modules + prior art
 logs/, dsdt.dat             probe captures + ACPI DSDT from this machine
 ```
