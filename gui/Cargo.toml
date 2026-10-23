@@ -23,7 +23,7 @@ g5core = { path = "../crates/core" }
 # One dependency for GPUI + the visual component library (gpui_kit::* IS gpui;
 # the component widgets live under gpui_kit::component). gpui-kit pins the
 # matching gpui-pre-* snapshot crates itself, so nothing else is needed here.
-gpui-kit = "0.7.0"
+gpui-kit = "0.8.0"
 # Only for `accesskit::Role` on the bespoke controls (the sidebar rows and the
 # fan-mode chips are plain divs, not kit Buttons, so they carry no role and a
 # screen reader announces them as nothing). Same version gpui itself pins, so
@@ -37,7 +37,7 @@ libc = "0.2"
 # `gpui-kit/test-support` unlocks GPUI's headless app context, whose
 # `capture_screenshot` renders a frame to a texture without a display. Only
 # tests pull it in, so the shipped binary is unaffected.
-gpui-kit = { version = "0.7.0", features = ["test-support"] }
+gpui-kit = { version = "0.8.0", features = ["test-support"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 # The release profile lives in the workspace root manifest: a profile in a
 # member is ignored by cargo.
