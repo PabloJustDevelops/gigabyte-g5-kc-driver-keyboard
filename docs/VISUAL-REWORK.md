@@ -5,12 +5,12 @@ functional port, plus the record of what has actually landed.
 
 Scope: **`gui/` only**. No kernel, CLI, backend or packaging changes.
 
-## Where this was left (2026-10-03)
+## Where this stands (2026-10-09)
 
 Read **§10** for the full record; this is the short version.
 
-Committed and green — `cargo fmt --check`, `clippy --all-targets -D warnings`,
-14 unit tests, 11 snapshot tests, `cargo build --frozen --release`:
+Green on `cargo fmt --check`, `clippy --all-targets -D warnings`, 20 unit tests,
+12 snapshot tests and `cargo build --frozen --release`:
 
 | Commit | What it did |
 |---|---|
@@ -20,12 +20,14 @@ Committed and green — `cargo fmt --check`, `clippy --all-targets -D warnings`,
 | `dee9039` | Keyboard operation (accesskit roles, focus ring, tab order) and motion |
 | `0635653` | **Responsive layout.** `layout::Breakpoint` from the window width: a 64 px icon rail under 800 px, two lanes and a capped, centred column from 1180 px |
 | `7d5c1f8` | **Hierarchy and instruments.** A five-step type scale, card labels and hairlines, a status strip beside the title, duty as an arc, temperature with a tick, sparklines fed by a rolling history |
+| *this change* | **Phase 8: the fan curve as a graph.** Five draggable points on a temperature/duty graph, the live temperatures marked on the ramp, and the drag clamped so the editor can never hold a curve the daemon refuses |
 
-**Uncommitted and unfinished:** the fan curve as a graph (Phase 8). Two files,
-`gui/src/panel.rs` and `gui/src/widgets.rs`, and the tree does not build. The
-clamping, the drag state and the canvas graph are written and unit-tested; three
-compile errors and the wiring into the view are not done. §10's "Phase 8"
-section lists them one by one.
+Phase 8 is finished; §10 records the three bugs the finishing pass found (a hit
+test that mixed °C with pixels, an area that sloped from 0 % instead of holding
+D1, and a drag that survived a release outside the plot). Everything else in
+this document that says "not done" is in §10's "Still open" list, and it is
+contrast measurement plus one missing card header — not code that does not
+build.
 
 ---
 
@@ -269,9 +271,12 @@ The preview is the app's centrepiece and the biggest gap.
 GPUI's headless renderer and writes one PNG per view:
 
 ```sh
-cd gui && cargo test --test snapshot -- --nocapture
-# -> gui/target/snapshots/{home,lighting,profiles,fans}.png
+cargo test -p g5kbd-gui --test snapshot -- --nocapture
+# -> target/snapshots/{home,lighting,profiles,fans}.png
 ```
+
+(`cargo` runs from the workspace root; `gui/target` stopped existing when the
+workspace did, and the images now land in the one `target/`.)
 
 This is the desktop equivalent of a browser test runner's screenshot step: no
 display, no compositor, no window manager, identical output every run, and it
@@ -535,65 +540,68 @@ intrinsic size:
 Done when `cargo test --test snapshot the_gauges_draw_their_trend` writes
 `gauges-trend.png` with a visible trace under each value.
 
-### Phase 8 — the fan curve as a graph (STARTED, NOT FINISHED)
+### Phase 8 — the fan curve as a graph
 
-**The working tree does not compile.** `gui/src/panel.rs` and
-`gui/src/widgets.rs` hold uncommitted work-in-progress for this phase; the last
-commit that builds is `7d5c1f8`. Everything above this section is committed and
-green. To get back to a building tree without losing the work:
+A curve is a shape, so it is drawn as one: five draggable points on a
+temperature/duty graph, with the area under it shaded because that area is
+literally what the daemon will ask of the fans. The ten sliders stay — a canvas
+has no place in the tab ring, and the curve has to stay editable without a
+pointer. This section started as "written, not finished, tree does not compile"
+on 2026-10-03; everything below is what finishing it took.
 
-```sh
-git stash push -m "wip: curve graph"   # work is kept, tree builds again
-git stash pop                          # and back again
-```
-
-What the phase is for: the fan curve is currently ten sliders in two rows of
-five. A curve is a shape, and it should be drawn as one — five draggable
-points on a temperature/duty graph, with the area under it shaded because that
-area is literally what the daemon will ask of the fans.
-
-What is already written:
+Where it lives now:
 
 - `panel::clamp_curve_point` (free function, `panel.rs`) clamps a proposed
-  point so the curve still passes `curve::curve_problem`: temperatures strictly
+  point so the curve still passes `fan::curve_problem`: temperatures strictly
   rise, duty never falls as it heats. Dragging a point into its neighbour stops
   one degree short instead of crossing.
 - `Panel::move_curve_point` / `begin_curve_drag` / `end_curve_drag`, and the
   `curve_drag` field. `move_curve_point` also writes the two sliders for that
-  point so the keyboard path and the graph cannot disagree.
-- Four unit tests over `clamp_curve_point`, including one that drags every point
-  hard in four directions and asserts `curve_problem` is still `None`.
-- `widgets::curve_graph`, `disc`, `point_at`, `draw_curve`: the canvas graph
-  with grid lines, the shaded area, the curve, the five handles and the
-  hit-testing that maps a pointer position back to a temperature and a duty.
-  The canvas records its own bounds in prepaint and the mouse handlers read
-  them back — the cheapest way to get a pointer position into curve units.
+  point, so the keyboard path and the graph cannot disagree — the snapshot test
+  asserts that too.
+- `widgets::curve_graph`, `curve_handle`, `curve_units`, `disc` and
+  `draw_curve`: grid lines, the shaded area, the curve, the live-temperature
+  markers and the five handles. The canvas records its own bounds in prepaint
+  and the mouse handlers read them back — the cheapest way to get a pointer
+  position into curve units.
+- `backend::fan::duty_for` (Rust) mirrors `duty_for` in `src/g5fan.py`, pinned
+  to the CLI's own test vectors, so the marks on the graph show the duty the
+  daemon would actually apply.
+- Four unit tests over `clamp_curve_point` and `duty_for`, and
+  `the_curve_graph_is_draggable` in `tests/snapshot.rs`, which presses on the
+  middle handle where the graph draws it, drags it up and to the left, and
+  asserts the curve moved, the neighbours did not, the sliders followed and
+  `curve_problem` is still `None`.
 
-What is left, in order:
+Three bugs the finishing pass turned up, all worth recording:
 
-1. **Make it compile.** Three known errors, all from the same edit:
-   - `widgets.rs`: `crate::Context` does not exist — it is `gpui_kit::Context`.
-   - `panel.rs`: `clamp_curve_point` landed *inside* `impl Panel`; move the
-     function (and its doc comment) above the `impl` block. `move_curve_point`
-     then resolves.
-   - `widgets.rs`: `.cursor()` takes a `CursorStyle`, not a colour. Drop it or
-     pass `gpui_kit::CursorStyle::ResizeHorizontal` / a pointer variant.
-2. **Put the graph in the view.** `curve_editor` in `views.rs` should render
-   `widgets::curve_graph(panel, window, cx)` above the sliders, and the sliders
-   stay underneath as the keyboard path. Do not delete the sliders: a canvas
-   has no place in the tab ring.
-3. **Check it.** `cargo test --test snapshot renders_every_view` writes
-   `fans.png`; the graph should appear above the sliders. Add a snapshot test
-   that drags a point (`gpui_kit::test::TestWindowExt` has `mouse_move`/
-   `mouse_down`-style helpers — check what the harness exposes before assuming)
-   and asserts `panel.curve` moved and stayed legal.
-4. **PKGBUILD and docs.** No new files yet, so `PKGBUILD` is still balanced at
-   36 sources / 36 sums. If the graph ends up in its own module, add it there.
+- **The hit test mixed units.** It converted the pointer to curve units and
+  compared that against handle positions in pixels, so "within 22" meant 22 °C
+  on one axis and 22 % on the other — about 150 px and 44 px on a 746 × 190
+  plot. Handles were grabbable from far away horizontally and not at all
+  vertically. It now compares pixels to pixels (`curve_handle`), with the grab
+  radius in pixels.
+- **The shaded area cut the curve's ends off.** It ran corner-to-corner through
+  the first and last point, drawing a slope from 0 % at 20 °C up to D1 — which
+  the daemon does not do. Below T1 the fans hold D1 and above T5 they hold D5,
+  so the area and the line now run to both edges at those duties. The graph
+  states the clamping that `duty_for` implements.
+- **A drag that left the plot kept dragging.** The release was only wired to
+  the plot, so a pointer that came up outside it left `curve_drag` set and the
+  next hover over the graph moved a point nobody had grabbed, now fixed with
+  `on_mouse_up_out`.
+
+The phase's "done when" was `fans.png` showing the graph above the sliders.
+That is not achievable at the shipped window size and the reason is worth
+knowing: the Fans view is taller than 680 px, the pane scrolls, and the curve
+card sits below the fold — at 1040 × 680 only its header shows. So the graph
+has its own snapshot at a window tall enough to hold it,
+`the_curve_graph_is_draggable` → `curve-graph.png`. Whether the curve belongs
+above the Mode card at the shipped size is a layout question for the next pass,
+not a bug in the graph.
 
 ### Still open
 
-- **Phase 8, the fan curve as a graph** — written, not finished, and the only
-  thing currently breaking the build. See the section above.
 - The contrast pass on the 8 px keycap legends and the 9–10.5 px uppercase
   labels: it needs measurement against the rendered PNGs rather than an
   opinion. The type scale reduced how much 12 px text there is, but the keycap
@@ -601,21 +609,28 @@ What is left, in order:
 - The keyboard preview on the Lighting view is a bare well with no card header,
   unlike every other block on the screen.
 - Nothing has been checked against the real hardware yet: every snapshot in
-  `gui/target/snapshots` is either the live cached fan snapshot or the honest
+  `target/snapshots` is either the live cached fan snapshot or the honest
   "unavailable" state. The gauges' sparklines only fill in over two and a half
   minutes of uptime, and `Panel::seed_history` fakes that for the snapshots —
   nobody has watched the real one fill.
+- The graph's own affordances have not been through a pointer on real glass:
+  the drag is tested through the headless harness, which dispatches the same
+  events the platform does, but nobody has felt where the grab radius sits.
+- The curve is still fixed at five points in the panel (the CLI takes 2..5),
+  and the graph has no keyboard path of its own — the sliders are it.
 
 ### How to check any of this yourself
 
 ```sh
-cd gui
-cargo test --test snapshot -- --nocapture   # writes gui/target/snapshots/*.png
-cargo run                                   # the real window
+# From the repository root (one cargo workspace):
+cargo test -p g5kbd-gui --test snapshot -- --nocapture   # -> target/snapshots/*.png
+cargo run -p g5kbd-gui                                   # the real window
 ```
 
 The snapshots are meant to be looked at, not asserted against: pinning pixels
 breaks on every font or theme change, which is exactly what this work changes.
 `gui/tools/measure.py` prints where the cards actually sit in a snapshot, in
 logical pixels, which is how the two-lane ratio was checked to be 2:1 rather
-than eyeballed.
+than eyeballed. `curve-graph.png` is the one to look at for Phase 8; the rest
+of the Fans view is in `fans.png`, whose bottom edge is exactly where the curve
+card starts at the shipped window size.
