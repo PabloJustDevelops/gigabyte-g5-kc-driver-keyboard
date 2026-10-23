@@ -14,8 +14,15 @@ jobs:
   # core and the CLIs are formatted, linted and tested together, and the curve
   # vectors are checked by the half that runs here rather than by two suites
   # that had to be kept in step by hand.
-  rust:
-    name: Rust (fmt + clippy + test)
+  #
+  # The `name:` still says "Panel" even though the job now covers the whole
+  # workspace: branch protection on main requires that exact context, and a
+  # required context that stops being reported blocks every PR
+  # (`mergeStateStatus: BLOCKED`, no red check to point at). Rename the job and
+  # the protection rule in the same move — the rule can only be edited with a
+  # classic PAT or from Settings, the gh CLI OAuth token gets a 404 on it.
+  panel:
+    name: Panel (fmt + clippy + test)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
