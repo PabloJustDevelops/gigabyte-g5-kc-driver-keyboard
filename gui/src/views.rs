@@ -204,7 +204,7 @@ fn sidebar(
                         // Keyboard support: a plain div with on_click is invisible to
                         // the tab ring and announces nothing to a screen reader.
                         .track_focus(&focus)
-                        .role(accesskit::Role::Tab)
+                        .role(gpui_kit::Role::Tab)
                         .focus_visible(|style| {
                             style.border_color(theme::mix(theme::ACCENT, theme::WHITE, 0.3))
                         })
@@ -426,7 +426,7 @@ fn mode_chip(
             panel.set_hover_mode(index, *on, cx);
         }))
         .track_focus(&focus)
-        .role(accesskit::Role::RadioButton)
+        .role(gpui_kit::Role::RadioButton)
         .focus_visible(|style| style.border_color(theme::mix(theme::ACCENT, theme::WHITE, 0.3)))
         .on_key_down(
             cx.listener(move |panel, event: &gpui_kit::KeyDownEvent, _window, cx| {

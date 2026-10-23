@@ -24,11 +24,12 @@ g5core = { path = "../crates/core" }
 # the component widgets live under gpui_kit::component). gpui-kit pins the
 # matching gpui-pre-* snapshot crates itself, so nothing else is needed here.
 gpui-kit = "0.8.0"
-# Only for `accesskit::Role` on the bespoke controls (the sidebar rows and the
-# fan-mode chips are plain divs, not kit Buttons, so they carry no role and a
-# screen reader announces them as nothing). Same version gpui itself pins, so
-# cargo unifies them into one build. The feature flag matches gpui's.
-accesskit = { version = "0.24", features = ["enumn"] }
+# The bespoke controls (sidebar rows, fan-mode chips) are plain divs, so they
+# carry no role and a screen reader announces them as nothing: they take their
+# role from `gpui_kit::Role`, which is the accesskit version gpui itself compiles
+# against. Pinning accesskit here as well only works while both versions happen
+# to match — a bump on one side silently produced two `Role` types and broke the
+# build (dependabot #22).
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 libc = "0.2"
