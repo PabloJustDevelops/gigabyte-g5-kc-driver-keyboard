@@ -1,0 +1,83 @@
+name: Kernel bind
+
+# g5kbd attaches to its ACPI device (CLV0001) in one of two ways:
+#
+#   * kernels < 7.3: struct acpi_driver + acpi_bus_register_driver()
+#   * kernels >= 7.3: the platform bus with an ACPI match table, because 7.3
+#     removed the acpi_driver API from the tree entirely (no declaration in
+#     include/acpi/acpi_bus.h, no symbol in Module.symvers).
+#
+# The build runner ships a 6.x kernel, so the 7.3 branch is only compiled when
+# G5KBD_FORCE_PLATFORM_BIND is defined: the APIs it uses predate 7.3 by years.
+# This is a compile-and-link gate, not a runtime test — it catches the branch
+# rotting or being dropped, which is exactly what happened when 7.3 landed.
+
+on:
+  pull_request:
+    paths:
+      - kernel/g5kbd.c
+      - kernel/Makefile
+      - .github/workflows/kernel-bind.yml
+  push:
+    branches: [main]
+    paths:
+      - kernel/g5kbd.c
+      - kernel/Makefile
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bind:
+    name: Bind — ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: acpi_driver (< 7.3)
+            kcflags: ""
+            expect: '(__)?acpi_bus_register_driver'
+            absent: '(__)?platform_driver_register'
+          - name: platform bus, forced (< 7.3)
+            kcflags: "-DG5KBD_FORCE_PLATFORM_BIND"
+            expect: '(__)?platform_driver_register'
+            absent: '(__)?acpi_bus_register_driver'
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install headers for the runner kernel
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          # Prefer the exact running kernel's headers; fall back to the generic
+          # package when the runner image has moved on from its kernel.
+          sudo apt-get install -y --no-install-recommends "linux-headers-$(uname -r)" || \
+            sudo apt-get install -y --no-install-recommends linux-headers-generic
+          test -d "/lib/modules/$(uname -r)/build" || {
+            echo "::error::no build tree for $(uname -r) (installed headers do not match the runner kernel)"
+            exit 1
+          }
+
+      - name: Build g5kbd.ko
+        # KBUILD_MODPOST_WARN: runners only ship headers, so the module-export
+        # symbol table they get is incomplete. The strict modpost run happens
+        # locally (install.sh / PKGBUILD / DKMS) against a full kernel tree.
+        run: make -C kernel KBUILD_MODPOST_WARN=1 KCFLAGS="${{ matrix.kcflags }}"
+
+      - name: Assert the expected bind path is the one that compiled
+        run: |
+          set -eu
+          test -f kernel/g5kbd.ko || { echo "::error::g5kbd.ko was not produced"; exit 1; }
+          echo "=> undefined symbols referencing a bind API:"
+          nm kernel/g5kbd.ko | grep -E ' U .*(_driver_register|_driver_unregister)' || true
+          if ! nm kernel/g5kbd.ko | grep -Eq "${{ matrix.expect }}"; then
+            echo "::error::expected ${{ matrix.expect }} — the wrong bind path was compiled"
+            exit 1
+          fi
+          if nm kernel/g5kbd.ko | grep -Eq "${{ matrix.absent }}"; then
+            echo "::error::${{ matrix.absent }} is present: both bind paths ended up in the module"
+            exit 1
+          fi
+          echo "OK: ${{ matrix.name }}"

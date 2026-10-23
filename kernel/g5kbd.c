@@ -33,6 +33,7 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/mutex.h>
+#include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/uuid.h>
 #include <linux/version.h>
@@ -480,6 +481,64 @@ static const struct acpi_device_id g5kbd_acpi_ids[] = {
 };
 MODULE_DEVICE_TABLE(acpi, g5kbd_acpi_ids);
 
+/*
+ * Bind target.
+ *
+ * 7.3 removed struct acpi_driver and acpi_bus_register_driver() from the tree
+ * (not in include/acpi/acpi_bus.h, not in Module.symvers), so from there on the
+ * driver has to go through the platform bus.
+ *
+ * G5KBD_FORCE_PLATFORM_BIND exists so CI can compile that branch against an
+ * older kernel: everything it uses (platform_driver_register, acpi_match_table,
+ * ACPI_COMPANION) predates 7.3 by years. Runners ship 6.x trees, so without it
+ * the 7.3 path would never be compiled anywhere but on the one machine that
+ * hit the break.
+ */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0) || \
+	defined(G5KBD_FORCE_PLATFORM_BIND)
+#define G5KBD_PLATFORM_BIND 1
+#endif
+
+#if defined(G5KBD_PLATFORM_BIND)
+/*
+ * Linux 7.3 removed struct acpi_driver, acpi_bus_register_driver() and
+ * acpi_bus_unregister_driver() from the tree: the declarations are gone from
+ * include/acpi/acpi_bus.h and the symbols are not in Module.symvers, so a
+ * module written the old way no longer compiles (incomplete type) nor links.
+ *
+ * With no acpi_driver claiming the device, the ACPI core's default enumeration
+ * creates the platform device for it (/sys/bus/platform/devices/CLV0001:00,
+ * modalias "acpi:CLV0001:") with the ACPI companion attached. Bind through the
+ * platform bus instead: platform_match() consults the ACPI match table, probe()
+ * gets the platform device and reaches the ACPI device through its companion.
+ * The LED/fan plumbing stays on adev->dev, so the sysfs layout does not move.
+ */
+static int g5kbd_platform_probe(struct platform_device *pdev)
+{
+	struct acpi_device *adev = ACPI_COMPANION(&pdev->dev);
+
+	if (!adev)
+		return -ENODEV;
+	return g5kbd_acpi_add(adev);
+}
+
+static void g5kbd_platform_remove(struct platform_device *pdev)
+{
+	struct acpi_device *adev = ACPI_COMPANION(&pdev->dev);
+
+	if (adev)
+		g5kbd_acpi_remove(adev);
+}
+
+static struct platform_driver g5kbd_platform_driver = {
+	.probe = g5kbd_platform_probe,
+	.remove = g5kbd_platform_remove,
+	.driver = {
+		.name = DRV_NAME,
+		.acpi_match_table = ACPI_PTR(g5kbd_acpi_ids),
+	},
+};
+#else
 static struct acpi_driver g5kbd_acpi_driver = {
 	.name = DRV_NAME,
 	.class = DRV_NAME,
@@ -489,6 +548,7 @@ static struct acpi_driver g5kbd_acpi_driver = {
 		.remove = g5kbd_acpi_remove,
 	},
 };
+#endif
 
 /* Only drive Gigabyte G5/G6/G7 laptops (the Clevo _DSM also exists on many
  * other machines we have not tested). */
@@ -510,6 +570,10 @@ static bool g5kbd_dmi_ok(void)
 	return true;
 }
 
+/*
+ * Bind: platform bus on 7.3+, where struct acpi_driver no longer exists.
+ * acpi_bus_register_driver() used to be the ACPI-bus equivalent of this.
+ */
 static int __init g5kbd_init(void)
 {
 	if (!g5kbd_dmi_ok()) {
@@ -517,12 +581,20 @@ static int __init g5kbd_init(void)
 			"to load (override with force=1)\n");
 		return -ENODEV;
 	}
+#if defined(G5KBD_PLATFORM_BIND)
+	return platform_driver_register(&g5kbd_platform_driver);
+#else
 	return acpi_bus_register_driver(&g5kbd_acpi_driver);
+#endif
 }
 
 static void __exit g5kbd_exit(void)
 {
+#if defined(G5KBD_PLATFORM_BIND)
+	platform_driver_unregister(&g5kbd_platform_driver);
+#else
 	acpi_bus_unregister_driver(&g5kbd_acpi_driver);
+#endif
 }
 
 module_init(g5kbd_init);
